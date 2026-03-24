@@ -141,8 +141,8 @@
         isPlaying = true;
 
         while (gachaQueue.length > 0) {
-          const nextItem = gachaQueue.shift();
-          await start(nextItem);
+          const nextDraw = gachaQueue.shift();
+          await start(nextDraw.item, nextDraw.drawId);
 
           if (gachaQueue.length > 0) {
             await sleep(NEXT_PACK_DELAY_MS);
@@ -152,7 +152,7 @@
         isPlaying = false;
       }
 
-      async function start(item) {
+      async function start(item, drawId) {
         const pack = document.getElementById("pack");
         const card = document.getElementById("card");
         const img = document.getElementById("img");
@@ -183,13 +183,25 @@
         // limpa o conteúdo da carta após sumir para evitar vazamento visual
         img.src = "";
         name.innerText = "";
+
+        if (drawId && socket.readyState === WebSocket.OPEN) {
+          socket.send(
+            JSON.stringify({
+              type: "gacha_animation_finished",
+              drawId,
+            }),
+          );
+        }
       }
 
       socket.onmessage = (event) => {
         const data = JSON.parse(event.data);
 
         if (data.type === "gacha") {
-          gachaQueue.push(data.item);
+          gachaQueue.push({
+            item: data.item,
+            drawId: data.drawId || "",
+          });
           processQueue();
         }
       };

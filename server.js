@@ -8,6 +8,9 @@ require("dotenv").config();
 const PORT = 3001;
 const TWITCH_CLIENT_ID = process.env.TWITCH_CLIENT_ID || "";
 const TWITCH_CLIENT_SECRET = process.env.TWITCH_CLIENT_SECRET || "";
+const TWITCH_BOT_ACCESS_TOKEN = process.env.TWITCH_BOT_ACCESS_TOKEN || "";
+const TWITCH_BOT_USER_ID = process.env.TWITCH_BOT_USER_ID || "";
+const TWITCH_BOT_LOGIN = process.env.TWITCH_BOT_LOGIN || "SucatasBot";
 const REDEMPTION_NAME = String(process.env.REDEMPTION_NAME || "pelucia").trim();
 const TWITCH_POLL_INTERVAL_MS = 4000;
 const TWITCH_REDIRECT_URI =
@@ -22,7 +25,6 @@ const PUBLIC_FILES = new Set([
   "control.html",
   "importItems.html",
   "overlay.html",
-  "plushies.js",
   "twitchControl.html",
   "twitchCallback.html",
 ]);
@@ -38,6 +40,8 @@ const twitchState = {
   oauthState: null,
   rewardId: null,
 };
+
+const pendingChatByDrawId = new Map();
 
 function ensureAuthCacheDir() {
   if (!fs.existsSync(AUTH_CACHE_DIR)) {
@@ -83,6 +87,10 @@ function toNumberPercent(value) {
 
 function createItemId() {
   return `item_${Date.now()}_${Math.random().toString(36).slice(2, 8)}`;
+}
+
+function createDrawId(prefix = "draw") {
+  return `${prefix}_${Date.now()}_${Math.random().toString(36).slice(2, 8)}`;
 }
 
 function normalizeSingleItem(rawItem, fallback = {}) {
@@ -220,20 +228,23 @@ function broadcastJson(payload) {
   });
 }
 
-function triggerOverlayFromPlushies(source = "manual") {
+function triggerOverlayFromPlushies(source = "manual", options = {}) {
   const item = pickRandomWeightedItem(importedItems);
   if (!item) {
     throw new Error("Nenhum plushie disponivel para disparar");
   }
 
+  const drawId = String(options.drawId || "").trim() || createDrawId("overlay");
+
   broadcastJson({
     type: "gacha",
+    drawId,
     item,
     source,
   });
 
   twitchState.lastTriggerAt = new Date().toISOString();
-  return item;
+  return { item, drawId };
 }
 
 function appendRedemptionLogLine(userName, plushieName) {
@@ -308,6 +319,17 @@ function getSafeTwitchStatus() {
     envConfigured: Boolean(TWITCH_CLIENT_ID && TWITCH_CLIENT_SECRET),
     redemptionName: REDEMPTION_NAME,
     pollIntervalMs: TWITCH_POLL_INTERVAL_MS,
+    chatSender: TWITCH_BOT_USER_ID
+      ? {
+          mode: "bot",
+          login: TWITCH_BOT_LOGIN,
+          userId: TWITCH_BOT_USER_ID,
+        }
+      : {
+          mode: "broadcaster",
+          login: auth?.login || "",
+          userId: auth?.broadcasterId || "",
+        },
     auth,
     queueSize: twitchState.seenRedemptions.size,
     lastRewardFound: twitchState.lastRewardFound,
@@ -326,7 +348,7 @@ function createTwitchAuthorizeUrl() {
   url.searchParams.set("redirect_uri", TWITCH_REDIRECT_URI);
   url.searchParams.set(
     "scope",
-    "channel:read:redemptions channel:manage:redemptions",
+    "channel:read:redemptions channel:manage:redemptions user:write:chat",
   );
   url.searchParams.set("state", state);
   url.searchParams.set("force_verify", "true");
@@ -446,6 +468,52 @@ async function twitchApiRequest(url, config, options = {}) {
   }
 
   return res.json();
+}
+
+async function sendRedemptionMessageToChat(config, userName, itemName) {
+  const safeUser = String(userName || "viewer").trim() || "viewer";
+  const safeItem =
+    String(itemName || "item surpresa").trim() || "item surpresa";
+  const message = `@${safeUser} resgatou e tirou: ${safeItem}!`;
+
+  const senderId = String(
+    config.chatSenderId || config.broadcasterId || "",
+  ).trim();
+  const senderToken = String(
+    config.chatAccessToken || config.accessToken || "",
+  ).trim();
+
+  if (!senderId || !senderToken) {
+    throw new Error("Sender do chat nao configurado (id/token)");
+  }
+
+  const res = await fetch("https://api.twitch.tv/helix/chat/messages", {
+    method: "POST",
+    headers: {
+      "Client-Id": config.clientId,
+      Authorization: `Bearer ${senderToken}`,
+      "Content-Type": "application/json; charset=utf-8",
+    },
+    body: JSON.stringify({
+      broadcaster_id: config.broadcasterId,
+      sender_id: senderId,
+      message,
+    }),
+  });
+
+  const response = await res.json();
+
+  if (!res.ok) {
+    throw new Error(
+      `Falha ao enviar mensagem no chat: ${JSON.stringify(response)}`,
+    );
+  }
+
+  if (response?.data?.[0]?.is_sent === false) {
+    const dropReason =
+      response.data[0].drop_reason?.message || "mensagem nao enviada";
+    throw new Error(`Falha ao enviar mensagem no chat: ${dropReason}`);
+  }
 }
 
 async function ensureRewardExists(config) {
@@ -579,8 +647,17 @@ async function pollTwitchRedemptions() {
       console.log(
         `[TWITCH] disparando overlay para redemption id=${redemption.id} user=${redemption.user_name}`,
       );
-      const drawnItem = triggerOverlayFromPlushies("twitch-pelucia");
+      const { item: drawnItem, drawId } = triggerOverlayFromPlushies(
+        "twitch-pelucia",
+        { drawId: `redemption_${redemption.id}` },
+      );
       appendRedemptionLogLine(redemption.user_name, drawnItem?.name);
+
+      pendingChatByDrawId.set(drawId, {
+        config,
+        userName: redemption.user_name,
+        itemName: drawnItem?.name,
+      });
     }
   } catch (err) {
     twitchState.lastError = err instanceof Error ? err.message : String(err);
@@ -858,6 +935,18 @@ async function handleApiRoutes(req, res, cleanPath) {
         accessToken: String(
           body.accessToken || cached?.accessToken || "",
         ).trim(),
+        chatSenderId: String(
+          TWITCH_BOT_USER_ID ||
+            body.chatSenderId ||
+            cached?.broadcasterId ||
+            "",
+        ).trim(),
+        chatAccessToken: String(
+          TWITCH_BOT_ACCESS_TOKEN ||
+            body.chatAccessToken ||
+            cached?.accessToken ||
+            "",
+        ).trim(),
         rewardName: REDEMPTION_NAME,
         pollIntervalMs: TWITCH_POLL_INTERVAL_MS,
       };
@@ -988,10 +1077,37 @@ const wss = new WebSocket.Server({ server });
 
 wss.on("connection", (ws) => {
   ws.on("message", (message) => {
+    const rawMessage = message.toString();
+
+    try {
+      const parsed = JSON.parse(rawMessage);
+      if (parsed?.type === "gacha_animation_finished") {
+        const drawId = String(parsed.drawId || "").trim();
+        if (!drawId) return;
+
+        const pending = pendingChatByDrawId.get(drawId);
+        if (!pending) return;
+
+        pendingChatByDrawId.delete(drawId);
+        sendRedemptionMessageToChat(
+          pending.config,
+          pending.userName,
+          pending.itemName,
+        ).catch((chatErr) => {
+          console.error(
+            `[TWITCH] falha ao enviar mensagem no chat: ${chatErr instanceof Error ? chatErr.message : String(chatErr)}`,
+          );
+        });
+        return;
+      }
+    } catch {
+      // Ignora parse e segue no broadcast normal para mensagens livres.
+    }
+
     // envia pra todos conectados (overlay e controle)
     wss.clients.forEach((client) => {
       if (client.readyState === WebSocket.OPEN) {
-        client.send(message.toString());
+        client.send(rawMessage);
       }
     });
   });
