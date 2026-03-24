@@ -1,0 +1,14 @@
+[
+  {
+    "id": "item_1774392287025_r2x1qg",
+    "name": "Chapaa",
+    "chance": 100,
+    "image": "/imgs/items/1774392287025-chapaa.png"
+  },
+  {
+    "id": "item_1774392301625_h2j7la",
+    "name": "Chapaa Gigante",
+    "chance": 100,
+    "image": "/imgs/items/1774392301625-chapaa-gigante.png"
+  }
+]

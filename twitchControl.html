@@ -1,0 +1,381 @@
+<!doctype html>
+<html lang="pt-BR">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>Twitch Control</title>
+    <style>
+      :root {
+        --bg: #0b1020;
+        --panel: #131a2e;
+        --line: #2a365f;
+        --text: #f5f7ff;
+        --muted: #9aa6d1;
+        --ok: #3ad88f;
+        --warn: #ffcc66;
+        --danger: #ff6b6b;
+      }
+
+      /* Navbar Styles */
+      .navbar {
+        background: rgba(11, 16, 32, 0.95);
+        border-bottom: 2px solid #2a365f;
+        padding: 1rem 2rem;
+        display: flex;
+        justify-content: space-between;
+        align-items: center;
+        box-shadow: 0 4px 20px rgba(0, 0, 0, 0.3);
+      }
+      .navbar-brand {
+        font-size: 1.3rem;
+        font-weight: bold;
+        background: linear-gradient(135deg, #3ad88f 0%, #60f0ff 100%);
+        -webkit-background-clip: text;
+        -webkit-text-fill-color: transparent;
+        background-clip: text;
+      }
+      .navbar-links {
+        display: flex;
+        gap: 1.5rem;
+        list-style: none;
+        margin: 0;
+        padding: 0;
+      }
+      .navbar-links a {
+        color: #9aa6d1;
+        text-decoration: none;
+        font-weight: 500;
+        transition: all 0.3s ease;
+      }
+      .navbar-links a:hover {
+        color: #3ad88f;
+      }
+      .navbar-links a.active {
+        color: #3ad88f;
+        border-bottom: 2px solid #3ad88f;
+        padding-bottom: 0.5rem;
+      }
+
+      * {
+        box-sizing: border-box;
+      }
+
+      body {
+        margin: 0;
+        background: radial-gradient(
+          circle at 20% 0%,
+          #1c2850 0%,
+          var(--bg) 45%
+        );
+        color: var(--text);
+        font-family:
+          Segoe UI,
+          Tahoma,
+          Geneva,
+          Verdana,
+          sans-serif;
+      }
+
+      .wrap {
+        margin-top: 2rem;
+        max-width: 820px;
+        margin: 36px auto;
+        padding: 0 16px;
+      }
+
+      .panel {
+        background: linear-gradient(180deg, #1a2340 0%, var(--panel) 100%);
+        border: 1px solid var(--line);
+        border-radius: 16px;
+        padding: 20px;
+        box-shadow: 0 18px 40px rgba(0, 0, 0, 0.35);
+      }
+
+      h1 {
+        margin: 0 0 16px;
+        font-size: 28px;
+      }
+
+      p {
+        margin: 6px 0 20px;
+        color: var(--muted);
+      }
+
+      .grid {
+        display: grid;
+        grid-template-columns: 1fr;
+        gap: 12px;
+      }
+
+      @media (min-width: 760px) {
+        .grid {
+          grid-template-columns: 1fr 1fr;
+        }
+      }
+
+      label {
+        display: block;
+        font-size: 13px;
+        color: var(--muted);
+        margin-bottom: 6px;
+      }
+
+      input {
+        width: 100%;
+        border: 1px solid var(--line);
+        background: #0f1530;
+        color: var(--text);
+        border-radius: 10px;
+        padding: 10px 12px;
+        outline: none;
+      }
+
+      .actions {
+        display: flex;
+        flex-wrap: wrap;
+        gap: 10px;
+        margin-top: 16px;
+      }
+
+      button {
+        border: 0;
+        border-radius: 10px;
+        padding: 10px 14px;
+        color: #fff;
+        font-weight: 700;
+        cursor: pointer;
+      }
+
+      .btn-start {
+        background: #2a9d6f;
+      }
+
+      .btn-stop {
+        background: #b34a4a;
+      }
+
+      .btn-test {
+        background: #3b5dcc;
+      }
+
+      .status {
+        margin-top: 18px;
+        padding: 12px;
+        border-radius: 10px;
+        background: #0f1530;
+        border: 1px solid var(--line);
+      }
+
+      .ok {
+        color: var(--ok);
+      }
+
+      .warn {
+        color: var(--warn);
+      }
+
+      .danger {
+        color: var(--danger);
+      }
+
+      pre {
+        margin: 10px 0 0;
+        white-space: pre-wrap;
+        word-break: break-word;
+        color: #c6d0ff;
+      }
+    </style>
+  </head>
+  <body>
+    <nav class="navbar">
+      <div class="navbar-brand">Lizah</div>
+      <ul class="navbar-links">
+        <li><a href="/importItems.html">ImportItems</a></li>
+        <li><a href="/control.html">Controle</a></li>
+        <li><a href="/twitchControl.html" class="active">Twitch</a></li>
+        <li><a href="/overlay.html" target="_blank">Overlay</a></li>
+      </ul>
+    </nav>
+    <main class="wrap">
+      <section class="panel">
+        <h1>Twitch Control</h1>
+        <p>
+          Monitora resgates de pontos do canal e dispara overlay quando o titulo
+          do resgate for pelucia.
+        </p>
+
+        <div class="grid">
+          <div>
+            <label for="broadcasterId">Broadcaster ID</label>
+            <input
+              id="broadcasterId"
+              placeholder="Conecte com a Twitch para preencher"
+              readonly
+            />
+          </div>
+          <div>
+            <label for="channelName">Canal</label>
+            <input
+              id="channelName"
+              placeholder="Conecte com a Twitch"
+              readonly
+            />
+          </div>
+          <div>
+            <label for="rewardName">Nome do resgate (.env)</label>
+            <input id="rewardName" value="-" readonly />
+          </div>
+          <div>
+            <label for="pollIntervalMs">Intervalo de consulta</label>
+            <input id="pollIntervalMs" value="1000 ms" readonly />
+          </div>
+        </div>
+
+        <div class="actions">
+          <button class="btn-test" id="btnConnect">Conectar Twitch</button>
+          <button class="btn-start" id="btnStart">Iniciar monitor</button>
+          <button class="btn-stop" id="btnStop">Parar monitor</button>
+          <button class="btn-test" id="btnTest">Teste de gatilho</button>
+          <button class="btn-stop" id="btnLogout">Sair</button>
+        </div>
+
+        <div class="status" id="statusBox">
+          <div id="statusLine" class="warn">Carregando status...</div>
+          <pre id="statusRaw"></pre>
+        </div>
+      </section>
+    </main>
+
+    <script>
+      const statusLine = document.getElementById("statusLine");
+      const statusRaw = document.getElementById("statusRaw");
+
+      function setStatus(text, cls) {
+        statusLine.className = cls;
+        statusLine.textContent = text;
+      }
+
+      function getPayload() {
+        return {
+          broadcasterId: document.getElementById("broadcasterId").value.trim(),
+        };
+      }
+
+      function fillFormFromStatus(status) {
+        if (!status) return;
+
+        if (status.auth && status.auth.broadcasterId) {
+          document.getElementById("broadcasterId").value =
+            status.auth.broadcasterId;
+          document.getElementById("channelName").value =
+            status.auth.displayName || status.auth.login || "";
+        } else {
+          document.getElementById("broadcasterId").value = "";
+          document.getElementById("channelName").value = "";
+        }
+
+        document.getElementById("rewardName").value =
+          status.redemptionName || "-";
+        document.getElementById("pollIntervalMs").value =
+          `${status.pollIntervalMs || 1000} ms`;
+      }
+
+      async function refreshStatus() {
+        const res = await fetch("/api/twitch/status");
+        const data = await res.json();
+
+        fillFormFromStatus(data);
+
+        if (!data.envConfigured) {
+          setStatus(
+            "Configure TWITCH_CLIENT_ID e TWITCH_CLIENT_SECRET no .env",
+            "danger",
+          );
+          statusRaw.textContent = JSON.stringify(data, null, 2);
+          return;
+        }
+
+        if (!data.auth) {
+          setStatus("Nao conectado. Clique em Conectar Twitch", "warn");
+          statusRaw.textContent = JSON.stringify(data, null, 2);
+          return;
+        }
+
+        if (data.running) {
+          setStatus("Monitor ativo", "ok");
+        } else {
+          setStatus("Monitor parado", "warn");
+        }
+
+        if (data.lastError) {
+          setStatus(`Erro: ${data.lastError}`, "danger");
+        }
+
+        statusRaw.textContent = JSON.stringify(data, null, 2);
+      }
+
+      async function postJson(url, payload) {
+        const res = await fetch(url, {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify(payload || {}),
+        });
+
+        const data = await res.json();
+        if (!res.ok || data.ok === false) {
+          throw new Error(data.message || "Falha na requisicao");
+        }
+
+        return data;
+      }
+
+      document
+        .getElementById("btnStart")
+        .addEventListener("click", async () => {
+          try {
+            await postJson("/api/twitch/start", getPayload());
+            await refreshStatus();
+          } catch (err) {
+            setStatus(`Erro ao iniciar: ${err.message}`, "danger");
+          }
+        });
+
+      document.getElementById("btnConnect").addEventListener("click", () => {
+        window.location.href = "/api/twitch/connect";
+      });
+
+      document.getElementById("btnStop").addEventListener("click", async () => {
+        try {
+          await postJson("/api/twitch/stop");
+          await refreshStatus();
+        } catch (err) {
+          setStatus(`Erro ao parar: ${err.message}`, "danger");
+        }
+      });
+
+      document.getElementById("btnTest").addEventListener("click", async () => {
+        try {
+          await postJson("/api/twitch/test-trigger");
+          setStatus("Gatilho de teste disparado no overlay", "ok");
+          await refreshStatus();
+        } catch (err) {
+          setStatus(`Erro no teste: ${err.message}`, "danger");
+        }
+      });
+
+      document
+        .getElementById("btnLogout")
+        .addEventListener("click", async () => {
+          try {
+            await postJson("/api/twitch/logout");
+            await refreshStatus();
+          } catch (err) {
+            setStatus(`Erro no logout: ${err.message}`, "danger");
+          }
+        });
+
+      refreshStatus();
+      setInterval(refreshStatus, 4000);
+    </script>
+  </body>
+</html>

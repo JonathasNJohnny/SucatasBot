@@ -1,0 +1,508 @@
+<!doctype html>
+<html lang="pt-BR">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>ImportItems</title>
+    <style>
+      :root {
+        --bg: #0b1020;
+        --panel: #131a2e;
+        --line: #2a365f;
+        --text: #f5f7ff;
+        --muted: #9aa6d1;
+        --ok: #3ad88f;
+        --danger: #ff6b6b;
+      }
+
+      * {
+        box-sizing: border-box;
+      }
+
+      body {
+        margin: 0;
+        background: radial-gradient(
+          circle at 20% 0%,
+          #1c2850 0%,
+          var(--bg) 45%
+        );
+        color: var(--text);
+        font-family:
+          Segoe UI,
+          Tahoma,
+          Geneva,
+          Verdana,
+          sans-serif;
+      }
+
+      .navbar {
+        background: rgba(11, 16, 32, 0.95);
+        border-bottom: 2px solid #2a365f;
+        padding: 1rem 2rem;
+        display: flex;
+        justify-content: space-between;
+        align-items: center;
+        box-shadow: 0 4px 20px rgba(0, 0, 0, 0.3);
+      }
+
+      .navbar-brand {
+        font-size: 1.3rem;
+        font-weight: bold;
+        background: linear-gradient(135deg, #3ad88f 0%, #60f0ff 100%);
+        -webkit-background-clip: text;
+        -webkit-text-fill-color: transparent;
+        background-clip: text;
+      }
+
+      .navbar-links {
+        display: flex;
+        gap: 1.5rem;
+        list-style: none;
+        margin: 0;
+        padding: 0;
+      }
+
+      .navbar-links a {
+        color: #9aa6d1;
+        text-decoration: none;
+        font-weight: 500;
+        transition: all 0.3s ease;
+      }
+
+      .navbar-links a:hover {
+        color: #3ad88f;
+      }
+
+      .navbar-links a.active {
+        color: #3ad88f;
+        border-bottom: 2px solid #3ad88f;
+        padding-bottom: 0.5rem;
+      }
+
+      .wrap {
+        max-width: 900px;
+        margin: 36px auto;
+        padding: 0 16px;
+      }
+
+      .panel {
+        background: linear-gradient(180deg, #1a2340 0%, var(--panel) 100%);
+        border: 1px solid var(--line);
+        border-radius: 16px;
+        padding: 20px;
+        box-shadow: 0 18px 40px rgba(0, 0, 0, 0.35);
+      }
+
+      h1 {
+        margin: 0 0 10px;
+        font-size: 28px;
+      }
+
+      p {
+        margin: 0 0 16px;
+        color: var(--muted);
+      }
+
+      .actions {
+        display: flex;
+        flex-wrap: wrap;
+        gap: 10px;
+        margin-top: 14px;
+      }
+
+      .form-grid {
+        display: grid;
+        grid-template-columns: repeat(auto-fit, minmax(220px, 1fr));
+        gap: 12px;
+        margin-top: 10px;
+      }
+
+      .field {
+        display: flex;
+        flex-direction: column;
+        gap: 6px;
+      }
+
+      .field label {
+        font-size: 13px;
+        color: var(--muted);
+      }
+
+      .field input {
+        border: 1px solid var(--line);
+        border-radius: 10px;
+        padding: 10px 12px;
+        background: #0f1530;
+        color: var(--text);
+      }
+
+      button {
+        border: 0;
+        border-radius: 10px;
+        padding: 10px 14px;
+        color: #fff;
+        font-weight: 700;
+        cursor: pointer;
+        background: #3b5dcc;
+      }
+
+      .ok {
+        background: #2a9d6f;
+      }
+
+      .danger {
+        background: #b34a4a;
+      }
+
+      .ghost-danger {
+        background: transparent;
+        border: 1px solid #b34a4a;
+        color: #ff9d9d;
+      }
+
+      .status {
+        margin-top: 16px;
+        padding: 12px;
+        border-radius: 10px;
+        background: #0f1530;
+        border: 1px solid var(--line);
+      }
+
+      .status-ok {
+        color: var(--ok);
+      }
+
+      .status-error {
+        color: var(--danger);
+      }
+
+      .items-editor {
+        margin-top: 16px;
+        display: grid;
+        gap: 12px;
+      }
+
+      .item-card {
+        background: #0f1530;
+        border: 1px solid var(--line);
+        border-radius: 10px;
+        padding: 12px;
+        display: grid;
+        gap: 10px;
+      }
+
+      .item-preview {
+        width: 72px;
+        height: 72px;
+        object-fit: contain;
+        border: 1px solid var(--line);
+        border-radius: 8px;
+        background: #0b1020;
+      }
+
+      .item-grid {
+        display: grid;
+        grid-template-columns: 84px 1fr;
+        gap: 12px;
+        align-items: start;
+      }
+
+      .item-fields {
+        display: grid;
+        grid-template-columns: repeat(auto-fit, minmax(180px, 1fr));
+        gap: 10px;
+      }
+
+      .empty {
+        margin-top: 16px;
+        padding: 14px;
+        border: 1px dashed var(--line);
+        border-radius: 10px;
+        color: var(--muted);
+      }
+    </style>
+  </head>
+  <body>
+    <nav class="navbar">
+      <div class="navbar-brand">Lizah</div>
+      <ul class="navbar-links">
+        <li><a href="/importItems.html" class="active">ImportItems</a></li>
+        <li><a href="/control.html">Controle</a></li>
+        <li><a href="/twitchControl.html">Twitch</a></li>
+        <li><a href="/overlay.html" target="_blank">Overlay</a></li>
+      </ul>
+    </nav>
+
+    <main class="wrap">
+      <section class="panel">
+        <h1>ImportItems</h1>
+        <p>
+          Cadastre os itens manualmente com nome, porcentagem e foto. Os dados
+          ficam salvos em importedItems.txt (formato JSON) no servidor.
+        </p>
+
+        <div class="form-grid">
+          <div class="field">
+            <label for="itemName">Nome do item</label>
+            <input id="itemName" type="text" placeholder="Ex.: Coelho Azul" />
+          </div>
+
+          <div class="field">
+            <label for="itemChance">Porcentagem (%)</label>
+            <input
+              id="itemChance"
+              type="number"
+              min="0"
+              step="0.01"
+              placeholder="Ex.: 12.5"
+            />
+          </div>
+
+          <div class="field">
+            <label for="itemImage">Foto do item</label>
+            <input id="itemImage" type="file" accept="image/*" />
+          </div>
+        </div>
+
+        <div class="actions">
+          <button id="btnImport" class="ok">Importar item</button>
+          <button id="btnCheck">Atualizar itens ativos</button>
+        </div>
+
+        <div id="status" class="status">Aguardando acao...</div>
+        <div id="itemsEditor" class="items-editor"></div>
+      </section>
+    </main>
+
+    <script>
+      const statusEl = document.getElementById("status");
+      const itemsEditorEl = document.getElementById("itemsEditor");
+      const btnImport = document.getElementById("btnImport");
+      const btnCheck = document.getElementById("btnCheck");
+      const itemNameEl = document.getElementById("itemName");
+      const itemChanceEl = document.getElementById("itemChance");
+      const itemImageEl = document.getElementById("itemImage");
+
+      function fileToDataUrl(file) {
+        return new Promise((resolve, reject) => {
+          const reader = new FileReader();
+          reader.onload = () => resolve(reader.result);
+          reader.onerror = () => reject(new Error("Falha ao ler a imagem"));
+          reader.readAsDataURL(file);
+        });
+      }
+
+      function setStatus(text, ok = true) {
+        statusEl.textContent = text;
+        statusEl.className = `status ${ok ? "status-ok" : "status-error"}`;
+      }
+
+      function createItemEditorRow(item) {
+        const card = document.createElement("div");
+        card.className = "item-card";
+        card.innerHTML = `
+          <div class="item-grid">
+            <img class="item-preview" src="${item.image}" alt="${item.name}" />
+
+            <div class="item-fields">
+              <div class="field">
+                <label>Nome</label>
+                <input type="text" class="edit-name" value="${item.name}" />
+              </div>
+
+              <div class="field">
+                <label>Porcentagem (%)</label>
+                <input
+                  type="number"
+                  class="edit-chance"
+                  min="0"
+                  step="0.01"
+                  value="${item.chance}"
+                />
+              </div>
+
+              <div class="field">
+                <label>Trocar foto (opcional)</label>
+                <input type="file" class="edit-image" accept="image/*" />
+              </div>
+            </div>
+          </div>
+
+          <div class="actions">
+            <button class="ok btn-save" data-id="${item.id}">Salvar alteracoes</button>
+            <button class="ghost-danger btn-delete" data-id="${item.id}" title="Excluir item">&#128465; Excluir</button>
+          </div>
+        `;
+
+        const saveButton = card.querySelector(".btn-save");
+        const deleteButton = card.querySelector(".btn-delete");
+        const nameInput = card.querySelector(".edit-name");
+        const chanceInput = card.querySelector(".edit-chance");
+        const imageInput = card.querySelector(".edit-image");
+        const previewImage = card.querySelector(".item-preview");
+
+        imageInput.addEventListener("change", () => {
+          const file = imageInput.files && imageInput.files[0];
+          if (!file) return;
+          previewImage.src = URL.createObjectURL(file);
+        });
+
+        saveButton.addEventListener("click", async () => {
+          try {
+            const name = nameInput.value.trim();
+            const chance = parseFloat(String(chanceInput.value));
+            const file = imageInput.files && imageInput.files[0];
+
+            if (!name) {
+              throw new Error("Informe o nome do item.");
+            }
+
+            if (!Number.isFinite(chance) || chance <= 0) {
+              throw new Error("Informe uma porcentagem maior que zero.");
+            }
+
+            const payload = {
+              id: item.id,
+              name,
+              chance,
+            };
+
+            if (file) {
+              payload.imageDataUrl = await fileToDataUrl(file);
+            }
+
+            const res = await fetch("/api/items/update", {
+              method: "POST",
+              headers: { "Content-Type": "application/json; charset=utf-8" },
+              body: JSON.stringify(payload),
+            });
+
+            const data = await res.json();
+            if (!res.ok || !data.ok) {
+              throw new Error(data.message || "Falha ao salvar item");
+            }
+
+            setStatus(`Item "${data.item.name}" atualizado.`, true);
+            await loadItems();
+          } catch (err) {
+            setStatus(err.message || "Erro ao salvar alteracoes", false);
+          }
+        });
+
+        deleteButton.addEventListener("click", async () => {
+          try {
+            const shouldDelete = confirm(
+              `Excluir o item \"${item.name}\"? Esta acao nao pode ser desfeita.`,
+            );
+
+            if (!shouldDelete) return;
+
+            const res = await fetch("/api/items/delete", {
+              method: "POST",
+              headers: { "Content-Type": "application/json; charset=utf-8" },
+              body: JSON.stringify({ id: item.id }),
+            });
+
+            const data = await res.json();
+            if (!res.ok || !data.ok) {
+              throw new Error(data.message || "Falha ao excluir item");
+            }
+
+            setStatus(`Item \"${item.name}\" excluido.`, true);
+            await loadItems();
+          } catch (err) {
+            setStatus(err.message || "Erro ao excluir item", false);
+          }
+        });
+
+        return card;
+      }
+
+      function renderItemsEditor(items) {
+        itemsEditorEl.innerHTML = "";
+
+        if (!items.length) {
+          const empty = document.createElement("div");
+          empty.className = "empty";
+          empty.textContent = "Nenhum item ativo no momento.";
+          itemsEditorEl.appendChild(empty);
+          return;
+        }
+
+        items.forEach((item) => {
+          itemsEditorEl.appendChild(createItemEditorRow(item));
+        });
+      }
+
+      btnImport.addEventListener("click", async () => {
+        try {
+          const name = itemNameEl.value.trim();
+          const chance = parseFloat(String(itemChanceEl.value));
+          const file = itemImageEl.files && itemImageEl.files[0];
+
+          if (!name) {
+            throw new Error("Informe o nome do item.");
+          }
+
+          if (!Number.isFinite(chance) || chance <= 0) {
+            throw new Error("Informe uma porcentagem maior que zero.");
+          }
+
+          if (!file) {
+            throw new Error("Selecione a foto do item.");
+          }
+
+          const imageDataUrl = await fileToDataUrl(file);
+          const res = await fetch("/api/items/add", {
+            method: "POST",
+            headers: { "Content-Type": "application/json; charset=utf-8" },
+            body: JSON.stringify({
+              name,
+              chance,
+              imageDataUrl,
+            }),
+          });
+
+          const data = await res.json();
+          if (!res.ok || !data.ok) {
+            throw new Error(data.message || "Falha ao importar item");
+          }
+
+          setStatus(
+            `Item importado com sucesso. Total ativo: ${data.count}.`,
+            true,
+          );
+          itemNameEl.value = "";
+          itemChanceEl.value = "";
+          itemImageEl.value = "";
+          await loadItems();
+        } catch (err) {
+          setStatus(err.message || "Erro ao importar", false);
+        }
+      });
+
+      async function loadItems() {
+        try {
+          const res = await fetch("/api/items");
+          const data = await res.json();
+          if (!res.ok || !data.ok) {
+            throw new Error(data.message || "Falha ao consultar servidor");
+          }
+
+          setStatus(
+            `Servidor com ${data.count} item(ns) ativo(s). Edite abaixo e salve.`,
+            true,
+          );
+          renderItemsEditor(Array.isArray(data.items) ? data.items : []);
+        } catch (err) {
+          setStatus(err.message || "Erro ao consultar servidor", false);
+          renderItemsEditor([]);
+        }
+      }
+
+      btnCheck.addEventListener("click", loadItems);
+
+      loadItems();
+    </script>
+  </body>
+</html>
