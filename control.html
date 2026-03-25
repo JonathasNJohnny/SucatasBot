@@ -2,9 +2,35 @@
 <html lang="pt-BR">
   <head>
     <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
     <title>Controle Gacha</title>
     <style>
-      /* Navbar Styles */
+      :root {
+        --bg: #0b1020;
+        --text: #f5f7ff;
+      }
+
+      * {
+        box-sizing: border-box;
+      }
+
+      body {
+        margin: 0;
+        background: radial-gradient(
+          circle at 20% 0%,
+          #1c2850 0%,
+          var(--bg) 45%
+        );
+        color: var(--text);
+        font-family:
+          Segoe UI,
+          Tahoma,
+          Geneva,
+          Verdana,
+          sans-serif;
+        text-align: center;
+      }
+
       .navbar {
         background: rgba(11, 16, 32, 0.95);
         border-bottom: 2px solid #2a365f;
@@ -47,21 +73,13 @@
   </head>
   <script>
     const channel = new BroadcastChannel("gacha_channel");
-    const socket = new WebSocket("ws://localhost:3001");
+    const socket = new WebSocket("ws://localhost:49382");
   </script>
-  <body
-    style="
-      background: #0f172a;
-      color: white;
-      font-family: sans-serif;
-      text-align: center;
-      margin: 0;
-    "
-  >
+  <body>
     <nav class="navbar">
-      <div class="navbar-brand">Lizah</div>
+      <div class="navbar-brand">SucatasBots</div>
       <ul class="navbar-links">
-        <li><a href="/importItems.html">ImportItems</a></li>
+        <li><a href="/importItems.html">Importações de Itens</a></li>
         <li><a href="/control.html" class="active">Controle</a></li>
         <li><a href="/twitchControl.html">Twitch</a></li>
         <li><a href="/overlay.html" target="_blank">Overlay</a></li>
@@ -69,7 +87,7 @@
     </nav>
     <h1>🎮 Controle Gacha</h1>
 
-    <p>Itens recebidos da aba ImportItems</p>
+    <p>Itens recebidos da aba Importações de Itens</p>
 
     <br /><br />
 
@@ -93,7 +111,7 @@
           render();
         } catch (err) {
           document.getElementById("list").innerHTML =
-            'Erro ao carregar itens. Use a aba <a href="/importItems.html">ImportItems</a> para importar.';
+            'Erro ao carregar itens. Use a aba <a href="/importItems.html">Importações de Itens</a> para importar.';
           console.error(err);
         }
       }
@@ -119,7 +137,7 @@
       function playGacha() {
         if (!items.length) {
           alert(
-            "Nenhum item importado. Va para ImportItems e importe primeiro.",
+            "Nenhum item importado. Va para Importações de Itens e importe primeiro.",
           );
           return;
         }
@@ -127,7 +145,7 @@
         const item = getRandomItem();
 
         if (!item) {
-          alert("Nenhum item carregado da ImportItems");
+          alert("Nenhum item carregado da Importações de Itens");
           return;
         }
 

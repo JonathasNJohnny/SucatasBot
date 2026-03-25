@@ -11,7 +11,7 @@ function createWindows() {
     height: 700,
   });
 
-  control.loadURL("http://localhost:3001/control.html");
+  control.loadURL("http://localhost:49382/control.html");
 }
 
 app.whenReady().then(() => {

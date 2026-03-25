@@ -5,7 +5,7 @@ const { exec } = require("child_process");
 const WebSocket = require("ws");
 require("dotenv").config();
 
-const PORT = 3001;
+const PORT = 49382;
 const TWITCH_CLIENT_ID = process.env.TWITCH_CLIENT_ID || "";
 const TWITCH_CLIENT_SECRET = process.env.TWITCH_CLIENT_SECRET || "";
 const TWITCH_BOT_ACCESS_TOKEN = process.env.TWITCH_BOT_ACCESS_TOKEN || "";
