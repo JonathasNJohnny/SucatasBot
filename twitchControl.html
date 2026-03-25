@@ -191,7 +191,6 @@
       <div class="navbar-brand">SucatasBots</div>
       <ul class="navbar-links">
         <li><a href="/importItems.html">Importações de Itens</a></li>
-        <li><a href="/control.html">Controle</a></li>
         <li><a href="/twitchControl.html" class="active">Twitch</a></li>
         <li><a href="/overlay.html" target="_blank">Overlay</a></li>
       </ul>
@@ -199,10 +198,7 @@
     <main class="wrap">
       <section class="panel">
         <h1>Twitch Control</h1>
-        <p>
-          Monitora resgates de pontos do canal e dispara overlay quando o titulo
-          do resgate for pelucia.
-        </p>
+        <p>Link para OBS: http://localhost:49382/overlay.html</p>
 
         <div class="grid">
           <div>
@@ -222,7 +218,7 @@
             />
           </div>
           <div>
-            <label for="rewardName">Nome do resgate (.env)</label>
+            <label for="rewardName">Nome do resgate</label>
             <input id="rewardName" value="-" readonly />
           </div>
           <div>
@@ -233,8 +229,7 @@
 
         <div class="actions">
           <button class="btn-test" id="btnConnect">Conectar Twitch</button>
-          <button class="btn-start" id="btnStart">Iniciar monitor</button>
-          <button class="btn-stop" id="btnStop">Parar monitor</button>
+          <button class="btn-start" id="btnStartStop">Iniciar monitor</button>
           <button class="btn-test" id="btnTest">Teste de gatilho</button>
           <button class="btn-stop" id="btnLogout">Sair</button>
         </div>
@@ -249,6 +244,7 @@
     <script>
       const statusLine = document.getElementById("statusLine");
       const statusRaw = document.getElementById("statusRaw");
+      const btnStartStop = document.getElementById("btnStartStop");
 
       function setStatus(text, cls) {
         statusLine.className = cls;
@@ -280,11 +276,22 @@
           `${status.pollIntervalMs || 1000} ms`;
       }
 
+      function updateStartStopButton(status) {
+        const isRunning = Boolean(status?.running);
+
+        btnStartStop.textContent = isRunning
+          ? "Parar monitor"
+          : "Iniciar monitor";
+        btnStartStop.className = isRunning ? "btn-stop" : "btn-start";
+        btnStartStop.dataset.action = isRunning ? "stop" : "start";
+      }
+
       async function refreshStatus() {
         const res = await fetch("/api/twitch/status");
         const data = await res.json();
 
         fillFormFromStatus(data);
+        updateStartStopButton(data);
 
         if (!data.envConfigured) {
           setStatus(
@@ -329,28 +336,24 @@
         return data;
       }
 
-      document
-        .getElementById("btnStart")
-        .addEventListener("click", async () => {
-          try {
+      btnStartStop.addEventListener("click", async () => {
+        const action = btnStartStop.dataset.action || "start";
+
+        try {
+          if (action === "stop") {
+            await postJson("/api/twitch/stop");
+          } else {
             await postJson("/api/twitch/start", getPayload());
-            await refreshStatus();
-          } catch (err) {
-            setStatus(`Erro ao iniciar: ${err.message}`, "danger");
           }
-        });
+          await refreshStatus();
+        } catch (err) {
+          const label = action === "stop" ? "parar" : "iniciar";
+          setStatus(`Erro ao ${label}: ${err.message}`, "danger");
+        }
+      });
 
       document.getElementById("btnConnect").addEventListener("click", () => {
         window.location.href = "/api/twitch/connect";
-      });
-
-      document.getElementById("btnStop").addEventListener("click", async () => {
-        try {
-          await postJson("/api/twitch/stop");
-          await refreshStatus();
-        } catch (err) {
-          setStatus(`Erro ao parar: ${err.message}`, "danger");
-        }
       });
 
       document.getElementById("btnTest").addEventListener("click", async () => {

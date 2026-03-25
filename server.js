@@ -22,7 +22,6 @@ const REDEMPTIONS_LOG_FILE = path.join(__dirname, "resgates.txt");
 const IMPORTED_ITEMS_FILE = path.join(__dirname, "importedItems.txt");
 const ITEMS_UPLOAD_DIR = path.join(__dirname, "imgs", "items");
 const PUBLIC_FILES = new Set([
-  "control.html",
   "importItems.html",
   "overlay.html",
   "twitchControl.html",
@@ -39,6 +38,7 @@ const twitchState = {
   seenRedemptions: new Set(),
   oauthState: null,
   rewardId: null,
+  monitorStartedAt: null,
 };
 
 const pendingChatByDrawId = new Map();
@@ -642,6 +642,20 @@ async function pollTwitchRedemptions() {
         continue;
       }
 
+      // Ignorar resgates feitos antes do monitor iniciar
+      const redemptionTime = new Date(redemption.redeemed_at);
+      if (
+        twitchState.monitorStartedAt &&
+        redemptionTime < twitchState.monitorStartedAt
+      ) {
+        twitchState.seenRedemptions.add(redemption.id);
+        trimSeenRedemptions();
+        console.log(
+          `[TWITCH] ignorando resgate antigo (antes do monitor iniciar): id=${redemption.id} user=${redemption.user_name}`,
+        );
+        continue;
+      }
+
       twitchState.seenRedemptions.add(redemption.id);
       trimSeenRedemptions();
       console.log(
@@ -683,6 +697,7 @@ function startTwitchMonitor(config) {
   twitchState.lastError = null;
   twitchState.lastRewardFound = null;
   twitchState.rewardId = null;
+  twitchState.monitorStartedAt = new Date();
 
   twitchState.intervalId = setInterval(
     pollTwitchRedemptions,
