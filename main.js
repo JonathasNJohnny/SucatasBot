@@ -2,7 +2,11 @@ const { app, BrowserWindow, ipcMain } = require("electron");
 const path = require("path");
 const fs = require("fs");
 
-const AUTH_CACHE_DIR = path.join(__dirname, ".cache");
+// Usar caminho persistente no AppData para funcionar tanto em dev quanto no build Electron
+const AUTH_CACHE_DIR = path.join(
+  process.env.APPDATA || path.join(process.env.HOME || "", ".config"),
+  "SucatasBot",
+);
 const AUTH_CACHE_FILE = path.join(AUTH_CACHE_DIR, "twitch-auth.json");
 
 // importa seu servidor (será recarregado após configurar)

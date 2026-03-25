@@ -19,7 +19,12 @@ const TWITCH_POLL_INTERVAL_MS = 4000;
 const TWITCH_REDIRECT_URI =
   process.env.TWITCH_REDIRECT_URI ||
   `http://localhost:${PORT}/api/twitch/callback`;
-const AUTH_CACHE_DIR = path.join(__dirname, ".cache");
+
+// Usar caminho persistente no AppData para funcionar tanto em dev quanto no build Electron
+const AUTH_CACHE_DIR = path.join(
+  process.env.APPDATA || path.join(process.env.HOME || "", ".config"),
+  "SucatasBot",
+);
 const AUTH_CACHE_FILE = path.join(AUTH_CACHE_DIR, "twitch-auth.json");
 const REDEMPTIONS_LOG_FILE = path.join(__dirname, "resgates.txt");
 const IMPORTED_ITEMS_FILE = path.join(__dirname, "importedItems.txt");

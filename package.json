@@ -1,17 +1,22 @@
 {
   "name": "sucatasbot",
   "version": "1.0.0",
-  "description": "",
+  "description": "Controle Gacha e Bot para Twitch",
   "main": "main.js",
-  "productName": "Sucatas Bot",
+  "productName": "SucatasBot",
   "build": {
-    "appId": "sucata.bot",
+    "appId": "com.sucatas.bot",
     "productName": "Sucatas Bot",
+    "directories": {
+      "output": "dist"
+    },
     "win": {
       "target": [
         "portable"
       ],
-      "icon": "icon.png"
+      "icon": "icon.png",
+      "cscLink": "sucatas-bot-cert.pfx",
+      "cscKeyPassword": "sucatasbot123"
     }
   },
   "scripts": {
