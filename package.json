@@ -1,12 +1,17 @@
 {
-  "name": "lizah",
+  "name": "sucatasbot",
   "version": "1.0.0",
   "description": "",
   "main": "main.js",
+  "productName": "Sucatas Bot",
   "build": {
-    "appId": "gacha.overlay",
+    "appId": "sucata.bot",
+    "productName": "Sucatas Bot",
     "win": {
-      "target": "nsis"
+      "target": [
+        "portable"
+      ],
+      "icon": "icon.png"
     }
   },
   "scripts": {

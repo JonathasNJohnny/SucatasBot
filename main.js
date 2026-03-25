@@ -2,7 +2,8 @@ const { app, BrowserWindow, ipcMain } = require("electron");
 const path = require("path");
 const fs = require("fs");
 
-const ENV_FILE = path.join(__dirname, ".env");
+const AUTH_CACHE_DIR = path.join(__dirname, ".cache");
+const AUTH_CACHE_FILE = path.join(AUTH_CACHE_DIR, "twitch-auth.json");
 
 // importa seu servidor (será recarregado após configurar)
 let serverModule = null;
@@ -14,8 +15,30 @@ function loadServer() {
   serverModule = require("./server.js");
 }
 
-function checkAndCreateEnv() {
-  return fs.existsSync(ENV_FILE);
+function ensureAuthCacheDir() {
+  if (!fs.existsSync(AUTH_CACHE_DIR)) {
+    fs.mkdirSync(AUTH_CACHE_DIR, { recursive: true });
+  }
+}
+
+function loadCachedConfig() {
+  try {
+    if (!fs.existsSync(AUTH_CACHE_FILE)) {
+      return {};
+    }
+    const raw = fs.readFileSync(AUTH_CACHE_FILE, "utf8");
+    return JSON.parse(raw);
+  } catch {
+    return {};
+  }
+}
+
+function hasClientCredentialsInCache() {
+  const cached = loadCachedConfig();
+  return Boolean(
+    String(cached.clientId || "").trim() &&
+    String(cached.clientSecret || "").trim(),
+  );
 }
 
 function createSetupWindow() {
@@ -198,15 +221,17 @@ function createWindowsAfterSetup() {
   const twitchControl = new BrowserWindow({
     width: 900,
     height: 700,
+    icon: path.join(__dirname, "icon.png"),
   });
 
+  twitchControl.setTitle("Lizah Gacha");
   twitchControl.loadURL("http://localhost:49382/twitchControl.html");
 }
 
 app.whenReady().then(() => {
   createPreloadFile();
 
-  const envExists = checkAndCreateEnv();
+  const hasClientCredentials = hasClientCredentialsInCache();
 
   const setupEnvHandler = () => {
     ipcMain.handle("save-config", async (event, data) => {
@@ -214,33 +239,38 @@ app.whenReady().then(() => {
         return { success: false, message: "Dados inválidos" };
       }
 
-      const envContent = `TWITCH_CLIENT_ID=${data.clientId}
-TWITCH_CLIENT_SECRET=${data.clientSecret}
-TWITCH_REDIRECT_URI=http://localhost:49382/api/twitch/callback
-REDEMPTION_NAME=Abrir Carta de Pelúcia
-TWITCH_BOT_ACCESS_TOKEN=
-TWITCH_BOT_REFRESH_TOKEN=
-TWITCH_BOT_LOGIN=SucatasBot
-TWITCH_BOT_USER_ID=
-`;
-
       try {
-        fs.writeFileSync(ENV_FILE, envContent, "utf8");
+        ensureAuthCacheDir();
+        const cached = loadCachedConfig();
+        fs.writeFileSync(
+          AUTH_CACHE_FILE,
+          JSON.stringify(
+            {
+              ...cached,
+              clientId: String(data.clientId || "").trim(),
+              clientSecret: String(data.clientSecret || "").trim(),
+              credentialsUpdatedAt: new Date().toISOString(),
+            },
+            null,
+            2,
+          ),
+          "utf8",
+        );
         loadServer();
         setTimeout(createWindowsAfterSetup, 1000);
         return { success: true };
       } catch (err) {
-        console.error("Erro ao salvar .env:", err);
+        console.error("Erro ao salvar cache:", err);
         return { success: false, message: err.message };
       }
     });
   };
 
-  if (!envExists) {
-    const setupWindow = createSetupWindow();
+  if (!hasClientCredentials) {
+    createSetupWindow();
     setupEnvHandler();
   } else {
-    // .env já existe
+    // Credenciais já existem no cache
     loadServer();
     setTimeout(createWindowsAfterSetup, 1000);
   }

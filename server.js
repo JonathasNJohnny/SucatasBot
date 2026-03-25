@@ -11,7 +11,10 @@ const TWITCH_CLIENT_SECRET = process.env.TWITCH_CLIENT_SECRET || "";
 const TWITCH_BOT_ACCESS_TOKEN = process.env.TWITCH_BOT_ACCESS_TOKEN || "";
 const TWITCH_BOT_USER_ID = process.env.TWITCH_BOT_USER_ID || "";
 const TWITCH_BOT_LOGIN = process.env.TWITCH_BOT_LOGIN || "SucatasBot";
-const REDEMPTION_NAME = String(process.env.REDEMPTION_NAME || "pelucia").trim();
+const DEFAULT_REDEMPTION_NAME = "Abrir Carta de Pelucia";
+const DEFAULT_REWARD_COST = 1;
+const DEFAULT_REWARD_COLOR = "#9147FF";
+const DEFAULT_REWARD_ENABLED = true;
 const TWITCH_POLL_INTERVAL_MS = 4000;
 const TWITCH_REDIRECT_URI =
   process.env.TWITCH_REDIRECT_URI ||
@@ -69,9 +72,37 @@ function loadCachedAuth() {
   }
 }
 
+function loadCachedRawConfig() {
+  try {
+    if (!fs.existsSync(AUTH_CACHE_FILE)) return null;
+    const raw = fs.readFileSync(AUTH_CACHE_FILE, "utf8");
+    const parsed = JSON.parse(raw);
+    if (!parsed || typeof parsed !== "object") {
+      return null;
+    }
+    return parsed;
+  } catch {
+    return null;
+  }
+}
+
+function getClientCredentials() {
+  const cached = loadCachedRawConfig();
+  const clientId = String(TWITCH_CLIENT_ID || cached?.clientId || "").trim();
+  const clientSecret = String(
+    TWITCH_CLIENT_SECRET || cached?.clientSecret || "",
+  ).trim();
+  return { clientId, clientSecret };
+}
+
 function saveCachedAuth(authData) {
   ensureAuthCacheDir();
-  fs.writeFileSync(AUTH_CACHE_FILE, JSON.stringify(authData, null, 2), "utf8");
+  const existing = loadCachedRawConfig() || {};
+  fs.writeFileSync(
+    AUTH_CACHE_FILE,
+    JSON.stringify({ ...existing, ...authData }, null, 2),
+    "utf8",
+  );
 }
 
 function clearCachedAuth() {
@@ -83,6 +114,33 @@ function clearCachedAuth() {
 function toNumberPercent(value) {
   const n = parseFloat(String(value).replace("%", ""));
   return Number.isFinite(n) ? n : 0;
+}
+
+function parseRewardCost(value, fallback = DEFAULT_REWARD_COST) {
+  const n = Number.parseInt(String(value ?? ""), 10);
+  if (!Number.isFinite(n) || n < 1) return fallback;
+  return Math.min(n, 1000000);
+}
+
+function parseRewardColor(value, fallback = DEFAULT_REWARD_COLOR) {
+  const raw = String(value || "")
+    .trim()
+    .toUpperCase();
+  if (/^#[0-9A-F]{6}$/.test(raw)) {
+    return raw;
+  }
+  return fallback;
+}
+
+function parseRewardEnabled(value, fallback = DEFAULT_REWARD_ENABLED) {
+  if (typeof value === "boolean") return value;
+  if (typeof value === "string") {
+    const normalized = value.trim().toLowerCase();
+    if (["true", "1", "on", "enabled"].includes(normalized)) return true;
+    if (["false", "0", "off", "disabled"].includes(normalized)) return false;
+  }
+  if (typeof value === "number") return value !== 0;
+  return fallback;
 }
 
 function createItemId() {
@@ -294,6 +352,7 @@ function readJsonBody(req) {
 }
 
 function getSafeTwitchStatus() {
+  const credentials = getClientCredentials();
   const config = twitchState.config
     ? {
         ...twitchState.config,
@@ -316,8 +375,20 @@ function getSafeTwitchStatus() {
   return {
     running: twitchState.running,
     config,
-    envConfigured: Boolean(TWITCH_CLIENT_ID && TWITCH_CLIENT_SECRET),
-    redemptionName: REDEMPTION_NAME,
+    envConfigured: Boolean(credentials.clientId && credentials.clientSecret),
+    redemptionName:
+      twitchState.config?.rewardName ||
+      twitchState.lastRewardFound ||
+      DEFAULT_REDEMPTION_NAME,
+    rewardCost:
+      twitchState.config?.rewardCost && twitchState.config.rewardCost > 0
+        ? twitchState.config.rewardCost
+        : DEFAULT_REWARD_COST,
+    rewardColor: twitchState.config?.rewardColor || DEFAULT_REWARD_COLOR,
+    rewardEnabled:
+      typeof twitchState.config?.rewardEnabled === "boolean"
+        ? twitchState.config.rewardEnabled
+        : DEFAULT_REWARD_ENABLED,
     pollIntervalMs: TWITCH_POLL_INTERVAL_MS,
     chatSender: TWITCH_BOT_USER_ID
       ? {
@@ -339,12 +410,13 @@ function getSafeTwitchStatus() {
 }
 
 function createTwitchAuthorizeUrl() {
+  const credentials = getClientCredentials();
   const state = `${Date.now()}_${Math.random().toString(36).slice(2, 10)}`;
   twitchState.oauthState = state;
 
   const url = new URL("https://id.twitch.tv/oauth2/authorize");
   url.searchParams.set("response_type", "code");
-  url.searchParams.set("client_id", TWITCH_CLIENT_ID);
+  url.searchParams.set("client_id", credentials.clientId);
   url.searchParams.set("redirect_uri", TWITCH_REDIRECT_URI);
   url.searchParams.set(
     "scope",
@@ -356,9 +428,10 @@ function createTwitchAuthorizeUrl() {
 }
 
 async function exchangeCodeForToken(code) {
+  const credentials = getClientCredentials();
   const body = new URLSearchParams({
-    client_id: TWITCH_CLIENT_ID,
-    client_secret: TWITCH_CLIENT_SECRET,
+    client_id: credentials.clientId,
+    client_secret: credentials.clientSecret,
     code,
     grant_type: "authorization_code",
     redirect_uri: TWITCH_REDIRECT_URI,
@@ -417,14 +490,15 @@ async function handleTwitchOAuthCallback(req, res) {
   }
 
   try {
+    const credentials = getClientCredentials();
     const tokenData = await exchangeCodeForToken(code);
     const user = await fetchAuthenticatedUser(
-      TWITCH_CLIENT_ID,
+      credentials.clientId,
       tokenData.access_token,
     );
 
     saveCachedAuth({
-      clientId: TWITCH_CLIENT_ID,
+      clientId: credentials.clientId,
       broadcasterId: user.id,
       login: user.login,
       displayName: user.display_name,
@@ -549,8 +623,9 @@ async function ensureRewardExists(config) {
     body: {
       title: config.rewardName,
       prompt: "Dispara uma carta de pelucia no overlay",
-      cost: 1,
-      is_enabled: true,
+      cost: parseRewardCost(config.rewardCost),
+      background_color: parseRewardColor(config.rewardColor),
+      is_enabled: parseRewardEnabled(config.rewardEnabled),
       is_user_input_required: false,
     },
   });
@@ -567,6 +642,145 @@ async function ensureRewardExists(config) {
   twitchState.lastRewardFound = created.title;
   twitchState.rewardId = created.id;
   return created;
+}
+
+async function deleteRewardById(config, rewardId) {
+  const id = String(rewardId || "").trim();
+  if (!id) return;
+
+  const deleteUrl = new URL(
+    "https://api.twitch.tv/helix/channel_points/custom_rewards",
+  );
+  deleteUrl.searchParams.set("broadcaster_id", config.broadcasterId);
+  deleteUrl.searchParams.set("id", id);
+
+  const res = await fetch(deleteUrl.toString(), {
+    method: "DELETE",
+    headers: {
+      "Client-Id": config.clientId,
+      Authorization: `Bearer ${config.accessToken}`,
+    },
+  });
+
+  if (!res.ok) {
+    const text = await res.text();
+    throw new Error(`Falha ao apagar reward anterior (${res.status}): ${text}`);
+  }
+}
+
+async function createReward(
+  config,
+  rewardName,
+  rewardCost,
+  rewardColor,
+  rewardEnabled,
+) {
+  const title = String(rewardName || "").trim();
+  if (!title) {
+    throw new Error("Informe um nome de resgate valido");
+  }
+
+  const rewardsUrl = new URL(
+    "https://api.twitch.tv/helix/channel_points/custom_rewards",
+  );
+  rewardsUrl.searchParams.set("broadcaster_id", config.broadcasterId);
+
+  const createdData = await twitchApiRequest(rewardsUrl.toString(), config, {
+    method: "POST",
+    body: {
+      title,
+      prompt: "Dispara uma carta de pelucia no overlay",
+      cost: parseRewardCost(rewardCost),
+      background_color: parseRewardColor(rewardColor),
+      is_enabled: parseRewardEnabled(rewardEnabled, config.rewardEnabled),
+      is_user_input_required: false,
+    },
+  });
+
+  const created = Array.isArray(createdData.data) ? createdData.data[0] : null;
+  if (!created || !created.id) {
+    throw new Error("Nao foi possivel criar o novo resgate");
+  }
+
+  return created;
+}
+
+async function replaceReward(
+  config,
+  nextRewardName,
+  nextRewardCost,
+  nextRewardColor,
+  nextRewardEnabled,
+) {
+  const newName = String(nextRewardName || "").trim();
+  if (!newName) {
+    throw new Error("Informe um nome de resgate valido");
+  }
+
+  const rewardsUrl = new URL(
+    "https://api.twitch.tv/helix/channel_points/custom_rewards",
+  );
+  rewardsUrl.searchParams.set("broadcaster_id", config.broadcasterId);
+
+  const rewardsData = await twitchApiRequest(rewardsUrl.toString(), config);
+  const rewards = Array.isArray(rewardsData.data) ? rewardsData.data : [];
+
+  const oldById = twitchState.rewardId
+    ? rewards.find((r) => r.id === twitchState.rewardId)
+    : null;
+  const oldByName = rewards.find(
+    (r) =>
+      normalizeRewardName(r.title) === normalizeRewardName(config.rewardName),
+  );
+  const oldReward = oldById || oldByName;
+
+  if (oldReward?.id) {
+    await deleteRewardById(config, oldReward.id);
+    console.log(
+      `[TWITCH] reward removido: id=${oldReward.id} title="${oldReward.title}"`,
+    );
+  }
+
+  const created = await createReward(
+    config,
+    newName,
+    parseRewardCost(nextRewardCost, config.rewardCost),
+    parseRewardColor(nextRewardColor, config.rewardColor),
+    parseRewardEnabled(nextRewardEnabled, config.rewardEnabled),
+  );
+  console.log(
+    `[TWITCH] reward criado apos alteracao: id=${created.id} title="${created.title}"`,
+  );
+
+  config.rewardName = created.title;
+  config.rewardCost = parseRewardCost(nextRewardCost, config.rewardCost);
+  config.rewardColor = parseRewardColor(nextRewardColor, config.rewardColor);
+  config.rewardEnabled = parseRewardEnabled(
+    nextRewardEnabled,
+    config.rewardEnabled,
+  );
+  twitchState.rewardId = created.id;
+  twitchState.lastRewardFound = created.title;
+  return created;
+}
+
+async function updateRewardEnabled(config, enabled) {
+  const reward = await ensureRewardExists(config);
+
+  const updateUrl = new URL(
+    "https://api.twitch.tv/helix/channel_points/custom_rewards",
+  );
+  updateUrl.searchParams.set("broadcaster_id", config.broadcasterId);
+  updateUrl.searchParams.set("id", reward.id);
+
+  await twitchApiRequest(updateUrl.toString(), config, {
+    method: "PATCH",
+    body: {
+      is_enabled: parseRewardEnabled(enabled, DEFAULT_REWARD_ENABLED),
+    },
+  });
+
+  config.rewardEnabled = parseRewardEnabled(enabled, DEFAULT_REWARD_ENABLED);
 }
 
 function normalizeRewardName(name) {
@@ -918,10 +1132,12 @@ async function handleApiRoutes(req, res, cleanPath) {
   }
 
   if (cleanPath === "/api/twitch/connect" && req.method === "GET") {
-    if (!TWITCH_CLIENT_ID || !TWITCH_CLIENT_SECRET) {
+    const credentials = getClientCredentials();
+    if (!credentials.clientId || !credentials.clientSecret) {
       sendJson(res, 500, {
         ok: false,
-        message: "Defina TWITCH_CLIENT_ID e TWITCH_CLIENT_SECRET no .env",
+        message:
+          "Defina TWITCH_CLIENT_ID e TWITCH_CLIENT_SECRET no cache inicial",
       });
       return true;
     }
@@ -942,8 +1158,9 @@ async function handleApiRoutes(req, res, cleanPath) {
     try {
       const body = await readJsonBody(req);
       const cached = loadCachedAuth();
+      const credentials = getClientCredentials();
       const config = {
-        clientId: TWITCH_CLIENT_ID || String(body.clientId || "").trim(),
+        clientId: String(body.clientId || "").trim() || credentials.clientId,
         broadcasterId: String(
           body.broadcasterId || cached?.broadcasterId || "",
         ).trim(),
@@ -962,7 +1179,14 @@ async function handleApiRoutes(req, res, cleanPath) {
             cached?.accessToken ||
             "",
         ).trim(),
-        rewardName: REDEMPTION_NAME,
+        rewardName:
+          String(body.rewardName || "").trim() || DEFAULT_REDEMPTION_NAME,
+        rewardCost: parseRewardCost(body.rewardCost, DEFAULT_REWARD_COST),
+        rewardColor: parseRewardColor(body.rewardColor, DEFAULT_REWARD_COLOR),
+        rewardEnabled: parseRewardEnabled(
+          body.rewardEnabled,
+          DEFAULT_REWARD_ENABLED,
+        ),
         pollIntervalMs: TWITCH_POLL_INTERVAL_MS,
       };
 
@@ -981,6 +1205,155 @@ async function handleApiRoutes(req, res, cleanPath) {
       sendJson(res, 400, {
         ok: false,
         message: err instanceof Error ? err.message : "Erro ao iniciar monitor",
+      });
+      return true;
+    }
+  }
+
+  if (cleanPath === "/api/twitch/reward-config" && req.method === "POST") {
+    try {
+      const body = await readJsonBody(req);
+      const nextRewardName = String(body.rewardName || "").trim();
+      const nextRewardCost = parseRewardCost(
+        body.rewardCost,
+        DEFAULT_REWARD_COST,
+      );
+      const nextRewardColor = parseRewardColor(
+        body.rewardColor,
+        DEFAULT_REWARD_COLOR,
+      );
+      const nextRewardEnabled = parseRewardEnabled(
+        body.rewardEnabled,
+        DEFAULT_REWARD_ENABLED,
+      );
+      if (!nextRewardName) {
+        sendJson(res, 400, {
+          ok: false,
+          message: "Informe um nome de resgate valido",
+        });
+        return true;
+      }
+
+      const cached = loadCachedAuth();
+      const credentials = getClientCredentials();
+      const config = twitchState.config || {
+        clientId: credentials.clientId,
+        broadcasterId: String(cached?.broadcasterId || "").trim(),
+        accessToken: String(cached?.accessToken || "").trim(),
+        chatSenderId: String(
+          TWITCH_BOT_USER_ID || cached?.broadcasterId || "",
+        ).trim(),
+        chatAccessToken: String(
+          TWITCH_BOT_ACCESS_TOKEN || cached?.accessToken || "",
+        ).trim(),
+        rewardName: DEFAULT_REDEMPTION_NAME,
+        rewardCost: DEFAULT_REWARD_COST,
+        rewardColor: DEFAULT_REWARD_COLOR,
+        rewardEnabled: DEFAULT_REWARD_ENABLED,
+        pollIntervalMs: TWITCH_POLL_INTERVAL_MS,
+      };
+
+      if (!config.clientId || !config.broadcasterId || !config.accessToken) {
+        sendJson(res, 400, {
+          ok: false,
+          message: "Conecte com a Twitch antes de alterar o nome do resgate",
+        });
+        return true;
+      }
+
+      if (
+        normalizeRewardName(config.rewardName) ===
+          normalizeRewardName(nextRewardName) &&
+        parseRewardCost(config.rewardCost, DEFAULT_REWARD_COST) ===
+          nextRewardCost &&
+        parseRewardColor(config.rewardColor, DEFAULT_REWARD_COLOR) ===
+          nextRewardColor &&
+        parseRewardEnabled(config.rewardEnabled, DEFAULT_REWARD_ENABLED) ===
+          nextRewardEnabled
+      ) {
+        sendJson(res, 200, {
+          ok: true,
+          message: "Configuracao do resgate ja esta atualizada",
+          status: getSafeTwitchStatus(),
+        });
+        return true;
+      }
+
+      await replaceReward(
+        config,
+        nextRewardName,
+        nextRewardCost,
+        nextRewardColor,
+        nextRewardEnabled,
+      );
+      twitchState.config = config;
+      twitchState.seenRedemptions.clear();
+      twitchState.monitorStartedAt = new Date();
+
+      sendJson(res, 200, {
+        ok: true,
+        message: "Resgate atualizado com sucesso",
+        status: getSafeTwitchStatus(),
+      });
+      return true;
+    } catch (err) {
+      sendJson(res, 400, {
+        ok: false,
+        message:
+          err instanceof Error ? err.message : "Erro ao atualizar resgate",
+      });
+      return true;
+    }
+  }
+
+  if (cleanPath === "/api/twitch/reward-enabled" && req.method === "POST") {
+    try {
+      const body = await readJsonBody(req);
+      const enabled = parseRewardEnabled(body.enabled, DEFAULT_REWARD_ENABLED);
+
+      const cached = loadCachedAuth();
+      const credentials = getClientCredentials();
+      const config = twitchState.config || {
+        clientId: credentials.clientId,
+        broadcasterId: String(cached?.broadcasterId || "").trim(),
+        accessToken: String(cached?.accessToken || "").trim(),
+        chatSenderId: String(
+          TWITCH_BOT_USER_ID || cached?.broadcasterId || "",
+        ).trim(),
+        chatAccessToken: String(
+          TWITCH_BOT_ACCESS_TOKEN || cached?.accessToken || "",
+        ).trim(),
+        rewardName: DEFAULT_REDEMPTION_NAME,
+        rewardCost: DEFAULT_REWARD_COST,
+        rewardColor: DEFAULT_REWARD_COLOR,
+        rewardEnabled: DEFAULT_REWARD_ENABLED,
+        pollIntervalMs: TWITCH_POLL_INTERVAL_MS,
+      };
+
+      if (!config.clientId || !config.broadcasterId || !config.accessToken) {
+        sendJson(res, 400, {
+          ok: false,
+          message: "Conecte com a Twitch antes de alterar o status do resgate",
+        });
+        return true;
+      }
+
+      await updateRewardEnabled(config, enabled);
+      twitchState.config = config;
+
+      sendJson(res, 200, {
+        ok: true,
+        message: enabled ? "Resgate ativado" : "Resgate desativado",
+        status: getSafeTwitchStatus(),
+      });
+      return true;
+    } catch (err) {
+      sendJson(res, 400, {
+        ok: false,
+        message:
+          err instanceof Error
+            ? err.message
+            : "Erro ao alternar status do resgate",
       });
       return true;
     }

@@ -130,6 +130,89 @@
         outline: none;
       }
 
+      .reward-progress-wrap {
+        margin-top: 8px;
+      }
+
+      .reward-progress-bar {
+        width: 100%;
+        height: 8px;
+        background: #0d1226;
+        border: 1px solid var(--line);
+        border-radius: 999px;
+        overflow: hidden;
+      }
+
+      .reward-progress-fill {
+        width: 0%;
+        height: 100%;
+        background: linear-gradient(90deg, #3ad88f 0%, #60f0ff 100%);
+        transition: width 0.09s linear;
+      }
+
+      .reward-progress-text {
+        margin-top: 6px;
+        font-size: 12px;
+        color: var(--muted);
+      }
+
+      .switch-row {
+        display: flex;
+        align-items: center;
+        gap: 10px;
+        margin-top: 2px;
+      }
+
+      .switch {
+        position: relative;
+        width: 56px;
+        height: 30px;
+        display: inline-block;
+      }
+
+      .switch input {
+        opacity: 0;
+        width: 0;
+        height: 0;
+        position: absolute;
+      }
+
+      .slider {
+        position: absolute;
+        inset: 0;
+        border-radius: 999px;
+        background: #5a647f;
+        border: 1px solid var(--line);
+        transition: all 0.2s ease;
+        cursor: pointer;
+      }
+
+      .slider::before {
+        content: "";
+        position: absolute;
+        width: 24px;
+        height: 24px;
+        left: 2px;
+        top: 2px;
+        border-radius: 50%;
+        background: #f5f7ff;
+        transition: transform 0.2s ease;
+      }
+
+      .switch input:checked + .slider {
+        background: #2a9d6f;
+      }
+
+      .switch input:checked + .slider::before {
+        transform: translateX(26px);
+      }
+
+      .switch-state {
+        font-size: 13px;
+        color: var(--muted);
+        min-width: 90px;
+      }
+
       .actions {
         display: flex;
         flex-wrap: wrap;
@@ -188,7 +271,7 @@
   </head>
   <body>
     <nav class="navbar">
-      <div class="navbar-brand">SucatasBots</div>
+      <div class="navbar-brand">Sucatas Bot</div>
       <ul class="navbar-links">
         <li><a href="/importItems.html">Importações de Itens</a></li>
         <li><a href="/twitchControl.html" class="active">Twitch</a></li>
@@ -219,7 +302,33 @@
           </div>
           <div>
             <label for="rewardName">Nome do resgate</label>
-            <input id="rewardName" value="-" readonly />
+            <input id="rewardName" value="-" />
+            <div class="reward-progress-wrap">
+              <div class="reward-progress-bar">
+                <div class="reward-progress-fill" id="rewardProgressFill"></div>
+              </div>
+              <div class="reward-progress-text" id="rewardProgressText">
+                Digite para agendar atualizacao em 10s
+              </div>
+            </div>
+          </div>
+          <div>
+            <label for="rewardCost">Pontos do resgate</label>
+            <input id="rewardCost" type="number" min="1" step="1" value="1" />
+          </div>
+          <div>
+            <label for="rewardColor">Cor do resgate</label>
+            <input id="rewardColor" type="color" value="#9147ff" />
+          </div>
+          <div>
+            <label for="rewardEnabled">Status do resgate</label>
+            <div class="switch-row">
+              <label class="switch" aria-label="Ativar ou desativar resgate">
+                <input id="rewardEnabled" type="checkbox" checked />
+                <span class="slider"></span>
+              </label>
+              <span class="switch-state" id="rewardEnabledText">ON</span>
+            </div>
           </div>
           <div>
             <label for="pollIntervalMs">Intervalo de consulta</label>
@@ -245,6 +354,20 @@
       const statusLine = document.getElementById("statusLine");
       const statusRaw = document.getElementById("statusRaw");
       const btnStartStop = document.getElementById("btnStartStop");
+      const rewardNameInput = document.getElementById("rewardName");
+      const rewardCostInput = document.getElementById("rewardCost");
+      const rewardColorInput = document.getElementById("rewardColor");
+      const rewardEnabledInput = document.getElementById("rewardEnabled");
+      const rewardEnabledText = document.getElementById("rewardEnabledText");
+      const rewardProgressFill = document.getElementById("rewardProgressFill");
+      const rewardProgressText = document.getElementById("rewardProgressText");
+
+      const REWARD_APPLY_DELAY_MS = 10000;
+      let rewardApplyTimeoutId = null;
+      let rewardProgressIntervalId = null;
+      let rewardCountdownStartedAt = 0;
+      let rewardEditInProgress = false;
+      let rewardToggleInProgress = false;
 
       function setStatus(text, cls) {
         statusLine.className = cls;
@@ -254,7 +377,16 @@
       function getPayload() {
         return {
           broadcasterId: document.getElementById("broadcasterId").value.trim(),
+          rewardName: rewardNameInput.value.trim(),
+          rewardCost: rewardCostInput.value,
+          rewardColor: rewardColorInput.value,
+          rewardEnabled: rewardEnabledInput.checked,
         };
+      }
+
+      function setRewardEnabledUi(enabled) {
+        rewardEnabledInput.checked = Boolean(enabled);
+        rewardEnabledText.textContent = enabled ? "ON" : "OFF";
       }
 
       function fillFormFromStatus(status) {
@@ -270,10 +402,95 @@
           document.getElementById("channelName").value = "";
         }
 
-        document.getElementById("rewardName").value =
-          status.redemptionName || "-";
+        if (!rewardEditInProgress) {
+          rewardNameInput.value = status.redemptionName || "-";
+          rewardCostInput.value = String(status.rewardCost || 1);
+          rewardColorInput.value = status.rewardColor || "#9147ff";
+          if (!rewardToggleInProgress) {
+            setRewardEnabledUi(Boolean(status.rewardEnabled));
+          }
+        }
         document.getElementById("pollIntervalMs").value =
           `${status.pollIntervalMs || 1000} ms`;
+      }
+
+      function clearRewardTimers() {
+        if (rewardApplyTimeoutId) {
+          clearTimeout(rewardApplyTimeoutId);
+          rewardApplyTimeoutId = null;
+        }
+
+        if (rewardProgressIntervalId) {
+          clearInterval(rewardProgressIntervalId);
+          rewardProgressIntervalId = null;
+        }
+      }
+
+      function renderRewardProgress(percent, text) {
+        const clamped = Math.max(0, Math.min(100, percent));
+        rewardProgressFill.style.width = `${clamped}%`;
+        rewardProgressText.textContent = text;
+      }
+
+      async function applyRewardNameChange() {
+        clearRewardTimers();
+
+        const rewardName = rewardNameInput.value.trim();
+        const rewardCost = rewardCostInput.value;
+        const rewardColor = rewardColorInput.value;
+        const rewardEnabled = rewardEnabledInput.checked;
+        if (!rewardName || rewardName === "-") {
+          renderRewardProgress(0, "Digite um nome valido para o resgate");
+          rewardEditInProgress = false;
+          return;
+        }
+
+        try {
+          renderRewardProgress(100, "Aplicando novo resgate...");
+          await postJson("/api/twitch/reward-config", {
+            rewardName,
+            rewardCost,
+            rewardColor,
+            rewardEnabled,
+          });
+          setStatus("Resgate atualizado: nome, pontos e cor aplicados", "ok");
+          rewardEditInProgress = false;
+          renderRewardProgress(
+            0,
+            "Atualizado. Digite para agendar nova alteracao",
+          );
+          await refreshStatus();
+        } catch (err) {
+          rewardEditInProgress = false;
+          renderRewardProgress(0, `Falha ao atualizar: ${err.message}`);
+          setStatus(`Erro ao atualizar resgate: ${err.message}`, "danger");
+        }
+      }
+
+      function scheduleRewardNameChange() {
+        clearRewardTimers();
+
+        rewardEditInProgress = true;
+        rewardCountdownStartedAt = Date.now();
+
+        renderRewardProgress(0, "Aguardando 10s sem digitar para aplicar...");
+
+        rewardProgressIntervalId = setInterval(() => {
+          const elapsed = Date.now() - rewardCountdownStartedAt;
+          const percent = (elapsed / REWARD_APPLY_DELAY_MS) * 100;
+          const remainingSec = Math.max(
+            0,
+            Math.ceil((REWARD_APPLY_DELAY_MS - elapsed) / 1000),
+          );
+          renderRewardProgress(
+            percent,
+            `Aplicando em ${remainingSec}s se nao houver nova digitacao`,
+          );
+        }, 100);
+
+        rewardApplyTimeoutId = setTimeout(() => {
+          applyRewardNameChange();
+        }, REWARD_APPLY_DELAY_MS);
       }
 
       function updateStartStopButton(status) {
@@ -295,7 +512,7 @@
 
         if (!data.envConfigured) {
           setStatus(
-            "Configure TWITCH_CLIENT_ID e TWITCH_CLIENT_SECRET no .env",
+            "Configure TWITCH_CLIENT_ID e TWITCH_CLIENT_SECRET no cache inicial",
             "danger",
           );
           statusRaw.textContent = JSON.stringify(data, null, 2);
@@ -376,6 +593,41 @@
             setStatus(`Erro no logout: ${err.message}`, "danger");
           }
         });
+
+      rewardNameInput.addEventListener("input", () => {
+        scheduleRewardNameChange();
+      });
+      rewardCostInput.addEventListener("input", () => {
+        scheduleRewardNameChange();
+      });
+      rewardColorInput.addEventListener("input", () => {
+        scheduleRewardNameChange();
+      });
+
+      rewardEnabledInput.addEventListener("change", async () => {
+        const nextEnabled = rewardEnabledInput.checked;
+        rewardToggleInProgress = true;
+        setRewardEnabledUi(nextEnabled);
+
+        try {
+          await postJson("/api/twitch/reward-enabled", {
+            enabled: nextEnabled,
+          });
+          setStatus(
+            nextEnabled ? "Resgate ativado" : "Resgate desativado",
+            "ok",
+          );
+          await refreshStatus();
+        } catch (err) {
+          setRewardEnabledUi(!nextEnabled);
+          setStatus(
+            `Erro ao alterar status do resgate: ${err.message}`,
+            "danger",
+          );
+        } finally {
+          rewardToggleInProgress = false;
+        }
+      });
 
       refreshStatus();
       setInterval(refreshStatus, 4000);
