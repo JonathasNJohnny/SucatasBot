@@ -26,9 +26,13 @@ const AUTH_CACHE_DIR = path.join(
   "SucatasBot",
 );
 const AUTH_CACHE_FILE = path.join(AUTH_CACHE_DIR, "twitch-auth.json");
-const REDEMPTIONS_LOG_FILE = path.join(__dirname, "resgates.txt");
-const IMPORTED_ITEMS_FILE = path.join(__dirname, "importedItems.txt");
-const ITEMS_UPLOAD_DIR = path.join(__dirname, "imgs", "items");
+const RUNTIME_DATA_DIR = path.join(AUTH_CACHE_DIR, "runtime");
+const RUNTIME_IMGS_DIR = path.join(RUNTIME_DATA_DIR, "imgs");
+const REDEMPTIONS_LOG_FILE = path.join(RUNTIME_DATA_DIR, "resgates.txt");
+const IMPORTED_ITEMS_FILE = path.join(RUNTIME_DATA_DIR, "importedItems.txt");
+const ITEMS_UPLOAD_DIR = path.join(RUNTIME_IMGS_DIR, "items");
+const LEGACY_PLUSHIES_UPLOAD_DIR = path.join(RUNTIME_IMGS_DIR, "plushies");
+const BUNDLED_IMGS_DIR = path.join(__dirname, "imgs");
 const PUBLIC_FILES = new Set([
   "importItems.html",
   "overlay.html",
@@ -57,10 +61,24 @@ function ensureAuthCacheDir() {
   }
 }
 
-function ensureUploadDir() {
-  if (!fs.existsSync(ITEMS_UPLOAD_DIR)) {
-    fs.mkdirSync(ITEMS_UPLOAD_DIR, { recursive: true });
+function ensureRuntimeDirs() {
+  const requiredDirs = [
+    AUTH_CACHE_DIR,
+    RUNTIME_DATA_DIR,
+    RUNTIME_IMGS_DIR,
+    ITEMS_UPLOAD_DIR,
+    LEGACY_PLUSHIES_UPLOAD_DIR,
+  ];
+
+  for (const dirPath of requiredDirs) {
+    if (!fs.existsSync(dirPath)) {
+      fs.mkdirSync(dirPath, { recursive: true });
+    }
   }
+}
+
+function ensureUploadDir() {
+  ensureRuntimeDirs();
 }
 
 function loadCachedAuth() {
@@ -171,6 +189,8 @@ function isValidItem(item) {
 
 function loadImportedItemsFromFile() {
   try {
+    ensureRuntimeDirs();
+
     if (!fs.existsSync(IMPORTED_ITEMS_FILE)) {
       fs.writeFileSync(IMPORTED_ITEMS_FILE, "[]\n", "utf8");
       return [];
@@ -209,6 +229,8 @@ function saveImportedItemsToFile(items) {
 
 let importedItems = loadImportedItemsFromFile();
 
+ensureRuntimeDirs();
+
 function normalizeImportedItems(rawItems) {
   if (!Array.isArray(rawItems)) return [];
 
@@ -227,9 +249,10 @@ function tryDeleteUploadedImage(imagePath) {
   const isLegacyPlushiesPath = relativePath.startsWith("/imgs/plushies/");
   if (!isItemsPath && !isLegacyPlushiesPath) return;
 
-  const absolutePath = path.resolve(__dirname, relativePath.slice(1));
-  const itemsRoot = path.resolve(__dirname, "imgs", "items");
-  const plushiesRoot = path.resolve(__dirname, "imgs", "plushies");
+  const relativeInsideImgs = relativePath.slice("/imgs/".length);
+  const absolutePath = path.resolve(RUNTIME_IMGS_DIR, relativeInsideImgs);
+  const itemsRoot = path.resolve(ITEMS_UPLOAD_DIR);
+  const plushiesRoot = path.resolve(LEGACY_PLUSHIES_UPLOAD_DIR);
   if (
     !absolutePath.startsWith(itemsRoot) &&
     !absolutePath.startsWith(plushiesRoot)
@@ -1008,6 +1031,7 @@ async function handleApiRoutes(req, res, cleanPath) {
         return true;
       }
 
+      ensureRuntimeDirs();
       importedItems = parsed;
       saveImportedItemsToFile(importedItems);
       sendJson(res, 200, {
@@ -1422,15 +1446,27 @@ const server = http.createServer((req, res) => {
   }
 
   if (cleanPath.startsWith("/imgs/")) {
-    const relativeAssetPath = cleanPath.slice(1);
-    const assetPath = path.resolve(__dirname, relativeAssetPath);
-    const imgsRoot = path.resolve(__dirname, "imgs");
+    const relativeAssetPath = cleanPath.slice("/imgs/".length);
+    const runtimeAssetPath = path.resolve(RUNTIME_IMGS_DIR, relativeAssetPath);
+    const runtimeImgsRoot = path.resolve(RUNTIME_IMGS_DIR);
+    const bundledAssetPath = path.resolve(BUNDLED_IMGS_DIR, relativeAssetPath);
+    const bundledImgsRoot = path.resolve(BUNDLED_IMGS_DIR);
 
-    if (!assetPath.startsWith(imgsRoot)) {
+    if (!runtimeAssetPath.startsWith(runtimeImgsRoot)) {
       res.writeHead(403, { "Content-Type": "text/plain; charset=utf-8" });
       res.end("Acesso negado");
       return;
     }
+
+    if (!bundledAssetPath.startsWith(bundledImgsRoot)) {
+      res.writeHead(403, { "Content-Type": "text/plain; charset=utf-8" });
+      res.end("Acesso negado");
+      return;
+    }
+
+    const assetPath = fs.existsSync(runtimeAssetPath)
+      ? runtimeAssetPath
+      : bundledAssetPath;
 
     fs.readFile(assetPath, (err, data) => {
       if (err) {
