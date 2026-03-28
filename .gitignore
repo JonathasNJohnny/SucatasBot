@@ -1,7 +1,8 @@
 node_modules/
 .env
 .cache/
-"dist/" 
-/dist
-/imgs/plushies
-/resgates.txt
+dist/
+
+# Runtime files gerados durante execucao local
+resgates.txt
+importedItems.txt
