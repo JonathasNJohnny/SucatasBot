@@ -108,10 +108,6 @@
     </style>
   </head>
 
-  <script>
-    const socket = new WebSocket("ws://localhost:49382");
-  </script>
-
   <body>
     <div class="overlay">
       <img class="pack" id="pack" src="/imgs/card/Package.png" />
@@ -126,11 +122,68 @@
     <script>
       const gachaQueue = [];
       let isPlaying = false;
+      let socket = null;
+      let reconnectTimer = null;
+      let reconnectDelayMs = 1500;
       const CARD_FADE_MS = 650;
       const NEXT_PACK_DELAY_MS = 1000;
 
+      const wsProtocol = location.protocol === "https:" ? "wss://" : "ws://";
+      const wsHost = location.host || "127.0.0.1:49382";
+      const WS_URL = wsProtocol + wsHost;
+
       function sleep(ms) {
         return new Promise((r) => setTimeout(r, ms));
+      }
+
+      function scheduleReconnect() {
+        if (reconnectTimer) {
+          return;
+        }
+
+        reconnectTimer = setTimeout(() => {
+          reconnectTimer = null;
+          connectSocket();
+        }, reconnectDelayMs);
+
+        reconnectDelayMs = Math.min(reconnectDelayMs * 1.5, 7000);
+      }
+
+      function connectSocket() {
+        try {
+          socket = new WebSocket(WS_URL);
+        } catch {
+          scheduleReconnect();
+          return;
+        }
+
+        socket.onopen = () => {
+          reconnectDelayMs = 1500;
+        };
+
+        socket.onmessage = (event) => {
+          const data = JSON.parse(event.data);
+
+          if (data.type === "gacha") {
+            gachaQueue.push({
+              item: data.item,
+              drawId: data.drawId || "",
+            });
+            processQueue();
+          }
+        };
+
+        socket.onclose = () => {
+          scheduleReconnect();
+        };
+
+        socket.onerror = () => {
+          try {
+            socket.close();
+          } catch {
+            scheduleReconnect();
+          }
+        };
       }
 
       async function processQueue() {
@@ -184,7 +237,7 @@
         img.src = "";
         name.innerText = "";
 
-        if (drawId && socket.readyState === WebSocket.OPEN) {
+        if (drawId && socket && socket.readyState === WebSocket.OPEN) {
           socket.send(
             JSON.stringify({
               type: "gacha_animation_finished",
@@ -194,17 +247,7 @@
         }
       }
 
-      socket.onmessage = (event) => {
-        const data = JSON.parse(event.data);
-
-        if (data.type === "gacha") {
-          gachaQueue.push({
-            item: data.item,
-            drawId: data.drawId || "",
-          });
-          processQueue();
-        }
-      };
+      connectSocket();
     </script>
   </body>
 </html>
