@@ -267,8 +267,17 @@
 
         <div class="actions">
           <button id="btnImport" class="ok">Importar item</button>
+          <button id="btnQuickImport">Importacao rapida</button>
           <button id="btnCheck">Atualizar itens ativos</button>
         </div>
+
+        <input
+          id="quickImportImages"
+          type="file"
+          accept="image/*"
+          multiple
+          hidden
+        />
 
         <div id="status" class="status">Aguardando acao...</div>
         <div id="itemsEditor" class="items-editor"></div>
@@ -279,10 +288,12 @@
       const statusEl = document.getElementById("status");
       const itemsEditorEl = document.getElementById("itemsEditor");
       const btnImport = document.getElementById("btnImport");
+      const btnQuickImport = document.getElementById("btnQuickImport");
       const btnCheck = document.getElementById("btnCheck");
       const itemNameEl = document.getElementById("itemName");
       const itemChanceEl = document.getElementById("itemChance");
       const itemImageEl = document.getElementById("itemImage");
+      const quickImportImagesEl = document.getElementById("quickImportImages");
 
       function fileToDataUrl(file) {
         return new Promise((resolve, reject) => {
@@ -296,6 +307,118 @@
       function setStatus(text, ok = true) {
         statusEl.textContent = text;
         statusEl.className = `status ${ok ? "status-ok" : "status-error"}`;
+      }
+
+      function sha256HexFromArrayBuffer(buffer) {
+        return crypto.subtle.digest("SHA-256", buffer).then((hashBuffer) => {
+          return Array.from(new Uint8Array(hashBuffer))
+            .map((byte) => byte.toString(16).padStart(2, "0"))
+            .join("");
+        });
+      }
+
+      function getMaxItemNumber(items) {
+        return items.reduce((max, item) => {
+          const match = String(item?.name || "")
+            .trim()
+            .match(/^item(\d+)/i);
+          if (!match) return max;
+          const parsed = Number.parseInt(match[1], 10);
+          return Number.isFinite(parsed) ? Math.max(max, parsed) : max;
+        }, 0);
+      }
+
+      async function getCurrentItems() {
+        const res = await fetch("/api/items");
+        const data = await res.json();
+        if (!res.ok || !data.ok) {
+          throw new Error(data.message || "Falha ao consultar itens");
+        }
+
+        return Array.isArray(data.items) ? data.items : [];
+      }
+
+      async function buildImageHashMap(items) {
+        const map = new Map();
+
+        await Promise.all(
+          items.map(async (item) => {
+            try {
+              const res = await fetch(item.image);
+              if (!res.ok) return;
+
+              const imageBuffer = await res.arrayBuffer();
+              const hash = await sha256HexFromArrayBuffer(imageBuffer);
+              if (!map.has(hash)) {
+                map.set(hash, item);
+              }
+            } catch {
+              // Ignora imagem que nao conseguiu baixar/hash.
+            }
+          }),
+        );
+
+        return map;
+      }
+
+      async function importSingleItem(payload) {
+        const res = await fetch("/api/items/add", {
+          method: "POST",
+          headers: { "Content-Type": "application/json; charset=utf-8" },
+          body: JSON.stringify(payload),
+        });
+
+        const data = await res.json();
+        if (!res.ok || !data.ok) {
+          throw new Error(data.message || "Falha ao importar item");
+        }
+
+        return data;
+      }
+
+      async function runQuickImport(fileList) {
+        const files = Array.from(fileList || []);
+        if (!files.length) {
+          throw new Error("Selecione ao menos uma imagem para importar.");
+        }
+
+        const rawChance = parseFloat(String(itemChanceEl.value));
+        const chance =
+          Number.isFinite(rawChance) && rawChance > 0 ? rawChance : 100;
+
+        const existingItems = await getCurrentItems();
+        const imageHashMap = await buildImageHashMap(existingItems);
+
+        let nextItemNumber = getMaxItemNumber(existingItems) + 1;
+        let importedCount = 0;
+
+        for (const file of files) {
+          const fileHash = await sha256HexFromArrayBuffer(
+            await file.arrayBuffer(),
+          );
+          const duplicatedFrom = imageHashMap.get(fileHash);
+
+          const baseName = `item${nextItemNumber}`;
+          const name = duplicatedFrom
+            ? `${baseName} (repetido ${duplicatedFrom.name})`
+            : baseName;
+
+          const imageDataUrl = await fileToDataUrl(file);
+          const result = await importSingleItem({
+            name,
+            chance,
+            imageDataUrl,
+          });
+
+          importedCount += 1;
+          nextItemNumber += 1;
+
+          if (!imageHashMap.has(fileHash)) {
+            imageHashMap.set(fileHash, result.item);
+          }
+        }
+
+        return importedCount;
       }
 
       function createItemEditorRow(item) {
@@ -454,20 +577,11 @@
           }
 
           const imageDataUrl = await fileToDataUrl(file);
-          const res = await fetch("/api/items/add", {
-            method: "POST",
-            headers: { "Content-Type": "application/json; charset=utf-8" },
-            body: JSON.stringify({
-              name,
-              chance,
-              imageDataUrl,
-            }),
+          const data = await importSingleItem({
+            name,
+            chance,
+            imageDataUrl,
           });
-
-          const data = await res.json();
-          if (!res.ok || !data.ok) {
-            throw new Error(data.message || "Falha ao importar item");
-          }
 
           setStatus(
             `Item importado com sucesso. Total ativo: ${data.count}.`,
@@ -479,6 +593,25 @@
           await loadItems();
         } catch (err) {
           setStatus(err.message || "Erro ao importar", false);
+        }
+      });
+
+      btnQuickImport.addEventListener("click", () => {
+        quickImportImagesEl.click();
+      });
+
+      quickImportImagesEl.addEventListener("change", async () => {
+        try {
+          const importedCount = await runQuickImport(quickImportImagesEl.files);
+          setStatus(
+            `Importacao rapida concluida. ${importedCount} item(ns) adicionados.`,
+            true,
+          );
+          quickImportImagesEl.value = "";
+          await loadItems();
+        } catch (err) {
+          setStatus(err.message || "Erro na importacao rapida", false);
+          quickImportImagesEl.value = "";
         }
       });
 
