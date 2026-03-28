@@ -4,280 +4,12 @@
     <meta charset="UTF-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
     <title>Twitch Control</title>
-    <style>
-      :root {
-        --bg: #0b1020;
-        --panel: #131a2e;
-        --line: #2a365f;
-        --text: #f5f7ff;
-        --muted: #9aa6d1;
-        --ok: #3ad88f;
-        --warn: #ffcc66;
-        --danger: #ff6b6b;
-      }
-
-      /* Navbar Styles */
-      .navbar {
-        background: rgba(11, 16, 32, 0.95);
-        border-bottom: 2px solid #2a365f;
-        padding: 1rem 2rem;
-        display: flex;
-        justify-content: space-between;
-        align-items: center;
-        box-shadow: 0 4px 20px rgba(0, 0, 0, 0.3);
-      }
-      .navbar-brand {
-        font-size: 1.3rem;
-        font-weight: bold;
-        background: linear-gradient(135deg, #3ad88f 0%, #60f0ff 100%);
-        -webkit-background-clip: text;
-        -webkit-text-fill-color: transparent;
-        background-clip: text;
-      }
-      .navbar-links {
-        display: flex;
-        gap: 1.5rem;
-        list-style: none;
-        margin: 0;
-        padding: 0;
-      }
-      .navbar-links a {
-        color: #9aa6d1;
-        text-decoration: none;
-        font-weight: 500;
-        transition: all 0.3s ease;
-      }
-      .navbar-links a:hover {
-        color: #3ad88f;
-      }
-      .navbar-links a.active {
-        color: #3ad88f;
-        border-bottom: 2px solid #3ad88f;
-        padding-bottom: 0.5rem;
-      }
-
-      * {
-        box-sizing: border-box;
-      }
-
-      body {
-        margin: 0;
-        background: radial-gradient(
-          circle at 20% 0%,
-          #1c2850 0%,
-          var(--bg) 45%
-        );
-        color: var(--text);
-        font-family:
-          Segoe UI,
-          Tahoma,
-          Geneva,
-          Verdana,
-          sans-serif;
-      }
-
-      .wrap {
-        margin-top: 2rem;
-        max-width: 820px;
-        margin: 36px auto;
-        padding: 0 16px;
-      }
-
-      .panel {
-        background: linear-gradient(180deg, #1a2340 0%, var(--panel) 100%);
-        border: 1px solid var(--line);
-        border-radius: 16px;
-        padding: 20px;
-        box-shadow: 0 18px 40px rgba(0, 0, 0, 0.35);
-      }
-
-      h1 {
-        margin: 0 0 16px;
-        font-size: 28px;
-      }
-
-      p {
-        margin: 6px 0 20px;
-        color: var(--muted);
-      }
-
-      .grid {
-        display: grid;
-        grid-template-columns: 1fr;
-        gap: 12px;
-      }
-
-      @media (min-width: 760px) {
-        .grid {
-          grid-template-columns: 1fr 1fr;
-        }
-      }
-
-      label {
-        display: block;
-        font-size: 13px;
-        color: var(--muted);
-        margin-bottom: 6px;
-      }
-
-      input {
-        width: 100%;
-        border: 1px solid var(--line);
-        background: #0f1530;
-        color: var(--text);
-        border-radius: 10px;
-        padding: 10px 12px;
-        outline: none;
-      }
-
-      .reward-progress-wrap {
-        margin-top: 8px;
-      }
-
-      .reward-progress-bar {
-        width: 100%;
-        height: 8px;
-        background: #0d1226;
-        border: 1px solid var(--line);
-        border-radius: 999px;
-        overflow: hidden;
-      }
-
-      .reward-progress-fill {
-        width: 0%;
-        height: 100%;
-        background: linear-gradient(90deg, #3ad88f 0%, #60f0ff 100%);
-        transition: width 0.09s linear;
-      }
-
-      .reward-progress-text {
-        margin-top: 6px;
-        font-size: 12px;
-        color: var(--muted);
-      }
-
-      .switch-row {
-        display: flex;
-        align-items: center;
-        gap: 10px;
-        margin-top: 2px;
-      }
-
-      .switch {
-        position: relative;
-        width: 56px;
-        height: 30px;
-        display: inline-block;
-      }
-
-      .switch input {
-        opacity: 0;
-        width: 0;
-        height: 0;
-        position: absolute;
-      }
-
-      .slider {
-        position: absolute;
-        inset: 0;
-        border-radius: 999px;
-        background: #5a647f;
-        border: 1px solid var(--line);
-        transition: all 0.2s ease;
-        cursor: pointer;
-      }
-
-      .slider::before {
-        content: "";
-        position: absolute;
-        width: 24px;
-        height: 24px;
-        left: 2px;
-        top: 2px;
-        border-radius: 50%;
-        background: #f5f7ff;
-        transition: transform 0.2s ease;
-      }
-
-      .switch input:checked + .slider {
-        background: #2a9d6f;
-      }
-
-      .switch input:checked + .slider::before {
-        transform: translateX(26px);
-      }
-
-      .switch-state {
-        font-size: 13px;
-        color: var(--muted);
-        min-width: 90px;
-      }
-
-      .actions {
-        display: flex;
-        flex-wrap: wrap;
-        gap: 10px;
-        margin-top: 16px;
-      }
-
-      button {
-        border: 0;
-        border-radius: 10px;
-        padding: 10px 14px;
-        color: #fff;
-        font-weight: 700;
-        cursor: pointer;
-      }
-
-      .btn-start {
-        background: #2a9d6f;
-      }
-
-      .btn-stop {
-        background: #b34a4a;
-      }
-
-      .btn-test {
-        background: #3b5dcc;
-      }
-
-      .status {
-        margin-top: 18px;
-        padding: 12px;
-        border-radius: 10px;
-        background: #0f1530;
-        border: 1px solid var(--line);
-      }
-
-      .ok {
-        color: var(--ok);
-      }
-
-      .warn {
-        color: var(--warn);
-      }
-
-      .danger {
-        color: var(--danger);
-      }
-
-      pre {
-        margin: 10px 0 0;
-        white-space: pre-wrap;
-        word-break: break-word;
-        color: #c6d0ff;
-      }
-    </style>
+    <link rel="stylesheet" href="/styles/general.css" />
+    <link rel="stylesheet" href="/styles/twitchControl.css" />
+    <script src="/components/navbar/navbar-loader.js" defer></script>
   </head>
   <body>
-    <nav class="navbar">
-      <div class="navbar-brand">Sucatas Bot</div>
-      <ul class="navbar-links">
-        <li><a href="/importItems.html">Importações de Itens</a></li>
-        <li><a href="/twitchControl.html" class="active">Twitch</a></li>
-        <li><a href="/overlay.html" target="_blank">Overlay</a></li>
-      </ul>
-    </nav>
+    <div id="navbarMount"></div>
     <main class="wrap">
       <section class="panel">
         <h1>Twitch Control</h1>
@@ -340,6 +72,9 @@
           <button class="btn-test" id="btnConnect">Conectar Twitch</button>
           <button class="btn-start" id="btnStartStop">Iniciar monitor</button>
           <button class="btn-test" id="btnTest">Teste de gatilho</button>
+          <button class="btn-stop" id="btnClearApiCache">
+            Limpar cache da API
+          </button>
           <button class="btn-stop" id="btnLogout">Sair</button>
         </div>
 
@@ -582,6 +317,27 @@
           setStatus(`Erro no teste: ${err.message}`, "danger");
         }
       });
+
+      document
+        .getElementById("btnClearApiCache")
+        .addEventListener("click", async () => {
+          const confirmed = confirm(
+            "Isso vai apagar o cache da API/Twitch (incluindo credenciais locais salvas). Deseja continuar?",
+          );
+
+          if (!confirmed) return;
+
+          try {
+            await postJson("/api/twitch/reset-cache");
+            setStatus(
+              "Cache limpo com sucesso. Reinicie o app para abrir a tela de setup.",
+              "warn",
+            );
+            await refreshStatus();
+          } catch (err) {
+            setStatus(`Erro ao limpar cache: ${err.message}`, "danger");
+          }
+        });
 
       document
         .getElementById("btnLogout")

@@ -4,235 +4,12 @@
     <meta charset="UTF-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
     <title>ImportItems</title>
-    <style>
-      :root {
-        --bg: #0b1020;
-        --panel: #131a2e;
-        --line: #2a365f;
-        --text: #f5f7ff;
-        --muted: #9aa6d1;
-        --ok: #3ad88f;
-        --danger: #ff6b6b;
-      }
-
-      * {
-        box-sizing: border-box;
-      }
-
-      body {
-        margin: 0;
-        background: radial-gradient(
-          circle at 20% 0%,
-          #1c2850 0%,
-          var(--bg) 45%
-        );
-        color: var(--text);
-        font-family:
-          Segoe UI,
-          Tahoma,
-          Geneva,
-          Verdana,
-          sans-serif;
-      }
-
-      .navbar {
-        background: rgba(11, 16, 32, 0.95);
-        border-bottom: 2px solid #2a365f;
-        padding: 1rem 2rem;
-        display: flex;
-        justify-content: space-between;
-        align-items: center;
-        box-shadow: 0 4px 20px rgba(0, 0, 0, 0.3);
-      }
-
-      .navbar-brand {
-        font-size: 1.3rem;
-        font-weight: bold;
-        background: linear-gradient(135deg, #3ad88f 0%, #60f0ff 100%);
-        -webkit-background-clip: text;
-        -webkit-text-fill-color: transparent;
-        background-clip: text;
-      }
-
-      .navbar-links {
-        display: flex;
-        gap: 1.5rem;
-        list-style: none;
-        margin: 0;
-        padding: 0;
-      }
-
-      .navbar-links a {
-        color: #9aa6d1;
-        text-decoration: none;
-        font-weight: 500;
-        transition: all 0.3s ease;
-      }
-
-      .navbar-links a:hover {
-        color: #3ad88f;
-      }
-
-      .navbar-links a.active {
-        color: #3ad88f;
-        border-bottom: 2px solid #3ad88f;
-        padding-bottom: 0.5rem;
-      }
-
-      .wrap {
-        max-width: 900px;
-        margin: 36px auto;
-        padding: 0 16px;
-      }
-
-      .panel {
-        background: linear-gradient(180deg, #1a2340 0%, var(--panel) 100%);
-        border: 1px solid var(--line);
-        border-radius: 16px;
-        padding: 20px;
-        box-shadow: 0 18px 40px rgba(0, 0, 0, 0.35);
-      }
-
-      h1 {
-        margin: 0 0 10px;
-        font-size: 28px;
-      }
-
-      p {
-        margin: 0 0 16px;
-        color: var(--muted);
-      }
-
-      .actions {
-        display: flex;
-        flex-wrap: wrap;
-        gap: 10px;
-        margin-top: 14px;
-      }
-
-      .form-grid {
-        display: grid;
-        grid-template-columns: repeat(auto-fit, minmax(220px, 1fr));
-        gap: 12px;
-        margin-top: 10px;
-      }
-
-      .field {
-        display: flex;
-        flex-direction: column;
-        gap: 6px;
-      }
-
-      .field label {
-        font-size: 13px;
-        color: var(--muted);
-      }
-
-      .field input {
-        border: 1px solid var(--line);
-        border-radius: 10px;
-        padding: 10px 12px;
-        background: #0f1530;
-        color: var(--text);
-      }
-
-      button {
-        border: 0;
-        border-radius: 10px;
-        padding: 10px 14px;
-        color: #fff;
-        font-weight: 700;
-        cursor: pointer;
-        background: #3b5dcc;
-      }
-
-      .ok {
-        background: #2a9d6f;
-      }
-
-      .danger {
-        background: #b34a4a;
-      }
-
-      .ghost-danger {
-        background: transparent;
-        border: 1px solid #b34a4a;
-        color: #ff9d9d;
-      }
-
-      .status {
-        margin-top: 16px;
-        padding: 12px;
-        border-radius: 10px;
-        background: #0f1530;
-        border: 1px solid var(--line);
-      }
-
-      .status-ok {
-        color: var(--ok);
-      }
-
-      .status-error {
-        color: var(--danger);
-      }
-
-      .items-editor {
-        margin-top: 16px;
-        display: grid;
-        gap: 12px;
-      }
-
-      .item-card {
-        background: #0f1530;
-        border: 1px solid var(--line);
-        border-radius: 10px;
-        padding: 12px;
-        display: grid;
-        gap: 10px;
-      }
-
-      .item-preview {
-        width: 72px;
-        height: 72px;
-        object-fit: contain;
-        border: 1px solid var(--line);
-        border-radius: 8px;
-        background: #0b1020;
-      }
-
-      .item-grid {
-        display: grid;
-        grid-template-columns: 84px 1fr;
-        gap: 12px;
-        align-items: start;
-      }
-
-      .item-fields {
-        display: grid;
-        grid-template-columns: repeat(auto-fit, minmax(180px, 1fr));
-        gap: 10px;
-      }
-
-      .empty {
-        margin-top: 16px;
-        padding: 14px;
-        border: 1px dashed var(--line);
-        border-radius: 10px;
-        color: var(--muted);
-      }
-    </style>
+    <link rel="stylesheet" href="/styles/general.css" />
+    <link rel="stylesheet" href="/styles/importItems.css" />
+    <script src="/components/navbar/navbar-loader.js" defer></script>
   </head>
   <body>
-    <nav class="navbar">
-      <div class="navbar-brand">Sucatas Bot</div>
-      <ul class="navbar-links">
-        <li>
-          <a href="/importItems.html" class="active">Importações de Itens</a>
-        </li>
-        <li><a href="/twitchControl.html">Twitch</a></li>
-        <li><a href="/overlay.html" target="_blank">Overlay</a></li>
-      </ul>
-    </nav>
+    <div id="navbarMount"></div>
 
     <main class="wrap">
       <section class="panel">
@@ -268,7 +45,6 @@
         <div class="actions">
           <button id="btnImport" class="ok">Importar item</button>
           <button id="btnQuickImport">Importacao rapida</button>
-          <button id="btnCheck">Atualizar itens ativos</button>
         </div>
 
         <input
@@ -289,11 +65,11 @@
       const itemsEditorEl = document.getElementById("itemsEditor");
       const btnImport = document.getElementById("btnImport");
       const btnQuickImport = document.getElementById("btnQuickImport");
-      const btnCheck = document.getElementById("btnCheck");
       const itemNameEl = document.getElementById("itemName");
       const itemChanceEl = document.getElementById("itemChance");
       const itemImageEl = document.getElementById("itemImage");
       const quickImportImagesEl = document.getElementById("quickImportImages");
+      const AUTO_SAVE_CHANCE_DELAY_MS = 700;
 
       function fileToDataUrl(file) {
         return new Promise((resolve, reject) => {
@@ -464,11 +240,83 @@
         const chanceInput = card.querySelector(".edit-chance");
         const imageInput = card.querySelector(".edit-image");
         const previewImage = card.querySelector(".item-preview");
+        let autoSaveTimeoutId = null;
+        let autoSavingChance = false;
+        let lastSavedChance = Number.parseFloat(String(item.chance));
+
+        async function updateItem(payload) {
+          const res = await fetch("/api/items/update", {
+            method: "POST",
+            headers: { "Content-Type": "application/json; charset=utf-8" },
+            body: JSON.stringify(payload),
+          });
+
+          const data = await res.json();
+          if (!res.ok || !data.ok) {
+            throw new Error(data.message || "Falha ao salvar item");
+          }
+
+          return data;
+        }
+
+        async function autoSaveChance(force = false) {
+          const parsedChance = parseFloat(String(chanceInput.value));
+
+          if (!Number.isFinite(parsedChance) || parsedChance <= 0) {
+            if (force) {
+              setStatus("Informe uma porcentagem maior que zero.", false);
+            }
+            return;
+          }
+
+          if (!force && parsedChance === lastSavedChance) {
+            return;
+          }
+
+          if (autoSavingChance) {
+            return;
+          }
+
+          autoSavingChance = true;
+
+          try {
+            const data = await updateItem({
+              id: item.id,
+              name: item.name,
+              chance: parsedChance,
+            });
+            lastSavedChance = Number.parseFloat(String(data.item?.chance));
+            item.chance = data.item?.chance;
+            setStatus(`Porcentagem de "${item.name}" atualizada.`, true);
+          } catch (err) {
+            setStatus(err.message || "Erro ao atualizar porcentagem", false);
+          } finally {
+            autoSavingChance = false;
+          }
+        }
 
         imageInput.addEventListener("change", () => {
           const file = imageInput.files && imageInput.files[0];
           if (!file) return;
           previewImage.src = URL.createObjectURL(file);
+        });
+
+        chanceInput.addEventListener("input", () => {
+          if (autoSaveTimeoutId) {
+            clearTimeout(autoSaveTimeoutId);
+          }
+
+          autoSaveTimeoutId = setTimeout(() => {
+            autoSaveChance();
+          }, AUTO_SAVE_CHANCE_DELAY_MS);
+        });
+
+        chanceInput.addEventListener("blur", () => {
+          if (autoSaveTimeoutId) {
+            clearTimeout(autoSaveTimeoutId);
+            autoSaveTimeoutId = null;
+          }
+          autoSaveChance(true);
         });
 
         saveButton.addEventListener("click", async () => {
@@ -495,17 +343,10 @@
               payload.imageDataUrl = await fileToDataUrl(file);
             }
 
-            const res = await fetch("/api/items/update", {
-              method: "POST",
-              headers: { "Content-Type": "application/json; charset=utf-8" },
-              body: JSON.stringify(payload),
-            });
+            const data = await updateItem(payload);
 
-            const data = await res.json();
-            if (!res.ok || !data.ok) {
-              throw new Error(data.message || "Falha ao salvar item");
-            }
-
+            item.name = data.item.name;
+            item.chance = data.item.chance;
             setStatus(`Item "${data.item.name}" atualizado.`, true);
             await loadItems();
           } catch (err) {
@@ -624,7 +465,7 @@
           }
 
           setStatus(
-            `Servidor com ${data.count} item(ns) ativo(s). Edite abaixo e salve.`,
+            `Servidor com ${data.count} item(ns) ativo(s). A porcentagem salva automaticamente.`,
             true,
           );
           renderItemsEditor(Array.isArray(data.items) ? data.items : []);
@@ -633,8 +474,6 @@
           renderItemsEditor([]);
         }
       }
-
-      btnCheck.addEventListener("click", loadItems);
 
       loadItems();
     </script>

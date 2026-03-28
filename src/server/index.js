@@ -21,6 +21,8 @@ const TWITCH_REDIRECT_URI =
   `http://localhost:${PORT}/api/twitch/callback`;
 const PROJECT_ROOT_DIR = path.resolve(__dirname, "..", "..");
 const PUBLIC_DIR = path.join(PROJECT_ROOT_DIR, "public");
+const PUBLIC_COMPONENTS_DIR = path.join(PUBLIC_DIR, "components");
+const PUBLIC_STYLES_DIR = path.join(PUBLIC_DIR, "styles");
 
 // Usar caminho persistente no AppData para funcionar tanto em dev quanto no build Electron
 const AUTH_CACHE_DIR = path.join(
@@ -933,6 +935,18 @@ function stopTwitchMonitor() {
   twitchState.rewardId = null;
 }
 
+function resetTwitchSessionState() {
+  stopTwitchMonitor();
+  twitchState.config = null;
+  twitchState.lastError = null;
+  twitchState.lastRewardFound = null;
+  twitchState.lastTriggerAt = null;
+  twitchState.oauthState = null;
+  twitchState.monitorStartedAt = null;
+  twitchState.seenRedemptions.clear();
+  pendingChatByDrawId.clear();
+}
+
 function startTwitchMonitor(config) {
   stopTwitchMonitor();
 
@@ -1179,9 +1193,21 @@ async function handleApiRoutes(req, res, cleanPath) {
   }
 
   if (cleanPath === "/api/twitch/logout" && req.method === "POST") {
-    stopTwitchMonitor();
+    resetTwitchSessionState();
     clearCachedAuth();
     sendJson(res, 200, { ok: true, status: getSafeTwitchStatus() });
+    return true;
+  }
+
+  if (cleanPath === "/api/twitch/reset-cache" && req.method === "POST") {
+    resetTwitchSessionState();
+    clearCachedAuth();
+    sendJson(res, 200, {
+      ok: true,
+      message:
+        "Cache da API/Twitch apagado. Reinicie o app para voltar para a tela de setup.",
+      status: getSafeTwitchStatus(),
+    });
     return true;
   }
 
@@ -1478,6 +1504,57 @@ const server = http.createServer((req, res) => {
       }
 
       res.writeHead(200, { "Content-Type": getContentType(assetPath) });
+      res.end(data);
+    });
+    return;
+  }
+
+  if (cleanPath.startsWith("/components/")) {
+    const relativeComponentPath = cleanPath.slice("/components/".length);
+    const componentPath = path.resolve(
+      PUBLIC_COMPONENTS_DIR,
+      relativeComponentPath,
+    );
+    const componentsRoot = path.resolve(PUBLIC_COMPONENTS_DIR);
+
+    if (!componentPath.startsWith(componentsRoot)) {
+      res.writeHead(403, { "Content-Type": "text/plain; charset=utf-8" });
+      res.end("Acesso negado");
+      return;
+    }
+
+    fs.readFile(componentPath, (err, data) => {
+      if (err) {
+        res.writeHead(404, { "Content-Type": "text/plain; charset=utf-8" });
+        res.end("Arquivo nao encontrado");
+        return;
+      }
+
+      res.writeHead(200, { "Content-Type": getContentType(componentPath) });
+      res.end(data);
+    });
+    return;
+  }
+
+  if (cleanPath.startsWith("/styles/")) {
+    const relativeStylePath = cleanPath.slice("/styles/".length);
+    const stylePath = path.resolve(PUBLIC_STYLES_DIR, relativeStylePath);
+    const stylesRoot = path.resolve(PUBLIC_STYLES_DIR);
+
+    if (!stylePath.startsWith(stylesRoot)) {
+      res.writeHead(403, { "Content-Type": "text/plain; charset=utf-8" });
+      res.end("Acesso negado");
+      return;
+    }
+
+    fs.readFile(stylePath, (err, data) => {
+      if (err) {
+        res.writeHead(404, { "Content-Type": "text/plain; charset=utf-8" });
+        res.end("Arquivo nao encontrado");
+        return;
+      }
+
+      res.writeHead(200, { "Content-Type": getContentType(stylePath) });
       res.end(data);
     });
     return;

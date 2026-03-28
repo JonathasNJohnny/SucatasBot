@@ -1,0 +1,117 @@
+@import url("/styles/colors/palette.css");
+
+:root {
+  --radius-lg: 16px;
+  --radius-md: 10px;
+}
+
+* {
+  box-sizing: border-box;
+}
+
+body {
+  margin: 0;
+  color: var(--text);
+  background: radial-gradient(
+    circle at 20% 0%,
+    var(--bg-accent) 0%,
+    var(--bg) 45%
+  );
+  font-family:
+    Segoe UI,
+    Tahoma,
+    Geneva,
+    Verdana,
+    sans-serif;
+}
+
+::-webkit-scrollbar {
+  width: 10px;
+}
+
+::-webkit-scrollbar-track {
+  background: var(--bg-accent);
+}
+
+::-webkit-scrollbar-thumb {
+  background: var(--line);
+  border-radius: 8px;
+  border: 2px solid transparent;
+  background-clip: content-box;
+}
+
+::-webkit-scrollbar-thumb:hover {
+  background: var(--text-soft);
+}
+
+.wrap {
+  max-width: 900px;
+  margin: 36px auto;
+  padding: 0 16px;
+}
+
+.panel {
+  background: linear-gradient(
+    180deg,
+    var(--panel-strong) 0%,
+    var(--panel) 100%
+  );
+  border: 1px solid var(--line);
+  border-radius: var(--radius-lg);
+  padding: 20px;
+  box-shadow: var(--shadow-strong);
+}
+
+h1 {
+  margin: 0 0 12px;
+  font-size: 28px;
+}
+
+p {
+  margin: 0 0 16px;
+  color: var(--muted);
+}
+
+label {
+  display: block;
+  font-size: 13px;
+  color: var(--muted);
+  margin-bottom: 6px;
+}
+
+input {
+  width: 100%;
+  border: 1px solid var(--line);
+  background: var(--input-bg);
+  color: var(--text);
+  border-radius: var(--radius-md);
+  padding: 10px 12px;
+  outline: none;
+}
+
+button {
+  border: 0;
+  border-radius: var(--radius-md);
+  padding: 10px 14px;
+  color: var(--text-inverse);
+  font-weight: 700;
+  cursor: pointer;
+  background: var(--button-primary);
+  transition: filter 0.2s ease;
+}
+
+button:hover {
+  filter: brightness(0.95);
+}
+
+.ok {
+  color: var(--ok);
+}
+
+.warn {
+  color: var(--warn);
+}
+
+.danger {
+  color: var(--danger);
+}
