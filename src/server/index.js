@@ -154,6 +154,49 @@ function clearCachedAuth() {
   }
 }
 
+function saveRewardConfig(rewardConfig) {
+  ensureAuthCacheDir();
+  const existing = loadCachedRawConfig() || {};
+  fs.writeFileSync(
+    AUTH_CACHE_FILE,
+    JSON.stringify(
+      {
+        ...existing,
+        rewardName: String(rewardConfig.rewardName || "").trim(),
+        rewardCost: parseRewardCost(rewardConfig.rewardCost),
+        rewardColor: parseRewardColor(rewardConfig.rewardColor),
+        rewardEnabled: parseRewardEnabled(rewardConfig.rewardEnabled),
+      },
+      null,
+      2,
+    ),
+    "utf8",
+  );
+}
+
+function loadRewardConfigFromCache() {
+  try {
+    const cached = loadCachedRawConfig();
+    if (!cached || typeof cached !== "object") return null;
+
+    const rewardName = String(cached.rewardName || "").trim();
+    const rewardCost = parseRewardCost(cached.rewardCost);
+    const rewardColor = parseRewardColor(cached.rewardColor);
+    const rewardEnabled = parseRewardEnabled(cached.rewardEnabled);
+
+    if (!rewardName) return null;
+
+    return {
+      rewardName,
+      rewardCost,
+      rewardColor,
+      rewardEnabled,
+    };
+  } catch {
+    return null;
+  }
+}
+
 function toNumberPercent(value) {
   const n = parseFloat(String(value).replace("%", ""));
   return Number.isFinite(n) ? n : 0;
@@ -502,23 +545,35 @@ function getSafeTwitchStatus() {
       }
     : null;
 
+  const cachedRewardConfig = loadRewardConfigFromCache();
+
   return {
     running: twitchState.running,
     config,
     envConfigured: Boolean(credentials.clientId && credentials.clientSecret),
     redemptionName:
       twitchState.config?.rewardName ||
+      cachedRewardConfig?.rewardName ||
       twitchState.lastRewardFound ||
       DEFAULT_REDEMPTION_NAME,
     rewardCost:
-      twitchState.config?.rewardCost && twitchState.config.rewardCost > 0
+      (twitchState.config?.rewardCost && twitchState.config.rewardCost > 0
         ? twitchState.config.rewardCost
-        : DEFAULT_REWARD_COST,
-    rewardColor: twitchState.config?.rewardColor || DEFAULT_REWARD_COLOR,
+        : 0) ||
+      (cachedRewardConfig?.rewardCost && cachedRewardConfig.rewardCost > 0
+        ? cachedRewardConfig.rewardCost
+        : 0) ||
+      DEFAULT_REWARD_COST,
+    rewardColor:
+      twitchState.config?.rewardColor ||
+      cachedRewardConfig?.rewardColor ||
+      DEFAULT_REWARD_COLOR,
     rewardEnabled:
       typeof twitchState.config?.rewardEnabled === "boolean"
         ? twitchState.config.rewardEnabled
-        : DEFAULT_REWARD_ENABLED,
+        : typeof cachedRewardConfig?.rewardEnabled === "boolean"
+          ? cachedRewardConfig.rewardEnabled
+          : DEFAULT_REWARD_ENABLED,
     pollIntervalMs: TWITCH_POLL_INTERVAL_MS,
     chatSender: TWITCH_BOT_USER_ID
       ? {
@@ -1050,6 +1105,7 @@ function startTwitchMonitor(config) {
 
   twitchState.running = true;
   twitchState.config = config;
+  saveRewardConfig(config);
   twitchState.lastError = null;
   twitchState.lastRewardFound = null;
   twitchState.rewardId = null;
@@ -1469,6 +1525,7 @@ async function handleApiRoutes(req, res, cleanPath) {
         nextRewardEnabled,
       );
       twitchState.config = config;
+      saveRewardConfig(config);
       twitchState.seenRedemptions.clear();
       twitchState.monitorStartedAt = new Date();
 
@@ -1522,6 +1579,7 @@ async function handleApiRoutes(req, res, cleanPath) {
 
       await updateRewardEnabled(config, enabled);
       twitchState.config = config;
+      saveRewardConfig(config);
 
       sendJson(res, 200, {
         ok: true,
