@@ -1,0 +1,253 @@
+<!doctype html>
+<html lang="pt-BR">
+  <head>
+    <meta charset="UTF-8" />
+    <title>Overlay Gacha</title>
+
+    <style>
+      body {
+        margin: 0;
+        background: transparent;
+        overflow: hidden;
+      }
+
+      .overlay {
+        position: fixed;
+        width: 100vw;
+        height: 100vh;
+        display: flex;
+        justify-content: center;
+        align-items: center;
+      }
+
+      .pack {
+        width: 225px;
+        height: 300px;
+        position: absolute;
+        object-fit: contain;
+        transform: scale(0);
+      }
+
+      /* shake circular */
+      @keyframes packSwing {
+        0% {
+          transform: scale(1) translate(0, 0) rotate(0deg);
+        }
+        12% {
+          transform: scale(1.03) translate(8px, -4px) rotate(7deg);
+        }
+        25% {
+          transform: scale(1.05) translate(11px, 2px) rotate(9deg);
+        }
+        37% {
+          transform: scale(1.03) translate(3px, 8px) rotate(3deg);
+        }
+        50% {
+          transform: scale(1.05) translate(-11px, 2px) rotate(-9deg);
+        }
+        62% {
+          transform: scale(1.03) translate(-8px, -4px) rotate(-7deg);
+        }
+        75% {
+          transform: scale(1.05) translate(9px, -2px) rotate(7deg);
+        }
+        88% {
+          transform: scale(1.02) translate(-7px, 3px) rotate(-6deg);
+        }
+        100% {
+          transform: scale(1) translate(0, 0) rotate(0deg);
+        }
+      }
+
+      /* carta */
+      .card {
+        position: absolute;
+        width: 200px;
+        height: 300px;
+        display: flex;
+        justify-content: center;
+        align-items: center;
+        position: relative;
+
+        transform: translateY(50px) scale(0.8);
+        opacity: 0;
+        transition: all 0.6s ease;
+      }
+
+      .card-bg {
+        position: absolute;
+        inset: 0;
+        width: 100%;
+        height: 100%;
+        object-fit: contain;
+      }
+
+      .card-item {
+        position: absolute;
+        left: 50%;
+        top: 47%;
+        transform: translate(-50%, -50%);
+        width: 58%;
+        height: 58%;
+        object-fit: contain;
+        z-index: 1;
+      }
+
+      .name {
+        position: absolute;
+        left: 50%;
+        bottom: 24px;
+        transform: translateX(-50%);
+        color: white;
+        font-size: 20px;
+        font-weight: 700;
+        text-align: center;
+        text-shadow: 0 2px 10px rgba(0, 0, 0, 0.85);
+        z-index: 2;
+      }
+    </style>
+  </head>
+
+  <body>
+    <div class="overlay">
+      <img class="pack" id="pack" src="/imgs/card/Package.png" />
+
+      <div class="card" id="card">
+        <img class="card-bg" src="/imgs/card/Photoroom.png" />
+        <img class="card-item" id="img" />
+        <div class="name" id="name"></div>
+      </div>
+    </div>
+
+    <script>
+      const gachaQueue = [];
+      let isPlaying = false;
+      let socket = null;
+      let reconnectTimer = null;
+      let reconnectDelayMs = 1500;
+      const CARD_FADE_MS = 650;
+      const NEXT_PACK_DELAY_MS = 1000;
+
+      const wsProtocol = location.protocol === "https:" ? "wss://" : "ws://";
+      const wsHost = location.host || "127.0.0.1:49382";
+      const WS_URL = wsProtocol + wsHost;
+
+      function sleep(ms) {
+        return new Promise((r) => setTimeout(r, ms));
+      }
+
+      function scheduleReconnect() {
+        if (reconnectTimer) {
+          return;
+        }
+
+        reconnectTimer = setTimeout(() => {
+          reconnectTimer = null;
+          connectSocket();
+        }, reconnectDelayMs);
+
+        reconnectDelayMs = Math.min(reconnectDelayMs * 1.5, 7000);
+      }
+
+      function connectSocket() {
+        try {
+          socket = new WebSocket(WS_URL);
+        } catch {
+          scheduleReconnect();
+          return;
+        }
+
+        socket.onopen = () => {
+          reconnectDelayMs = 1500;
+        };
+
+        socket.onmessage = (event) => {
+          const data = JSON.parse(event.data);
+
+          if (data.type === "gacha") {
+            gachaQueue.push({
+              item: data.item,
+              drawId: data.drawId || "",
+            });
+            processQueue();
+          }
+        };
+
+        socket.onclose = () => {
+          scheduleReconnect();
+        };
+
+        socket.onerror = () => {
+          try {
+            socket.close();
+          } catch {
+            scheduleReconnect();
+          }
+        };
+      }
+
+      async function processQueue() {
+        if (isPlaying || gachaQueue.length === 0) {
+          return;
+        }
+
+        isPlaying = true;
+
+        while (gachaQueue.length > 0) {
+          const nextDraw = gachaQueue.shift();
+          await start(nextDraw.item, nextDraw.drawId);
+
+          if (gachaQueue.length > 0) {
+            await sleep(NEXT_PACK_DELAY_MS);
+          }
+        }
+
+        isPlaying = false;
+      }
+
+      async function start(item, drawId) {
+        const pack = document.getElementById("pack");
+        const card = document.getElementById("card");
+        const img = document.getElementById("img");
+        const name = document.getElementById("name");
+
+        img.src = item.image;
+        // name.innerText = item.name;
+
+        pack.style.transform = "scale(1)";
+        pack.style.animation = "none";
+        void pack.offsetWidth;
+        pack.style.animation = "packSwing 0.9s ease-in-out";
+
+        await sleep(1800);
+
+        card.style.transform = "translateY(0) scale(1)";
+        card.style.opacity = "1";
+
+        await sleep(4000);
+
+        // reset
+        pack.style.transform = "scale(0)";
+        card.style.transform = "translateY(50px) scale(0.8)";
+        card.style.opacity = "0";
+
+        await sleep(CARD_FADE_MS);
+
+        // limpa o conteúdo da carta após sumir para evitar vazamento visual
+        img.src = "";
+        name.innerText = "";
+
+        if (drawId && socket && socket.readyState === WebSocket.OPEN) {
+          socket.send(
+            JSON.stringify({
+              type: "gacha_animation_finished",
+              drawId,
+            }),
+          );
+        }
+      }
+
+      connectSocket();
+    </script>
+  </body>
+</html>
