@@ -4,31 +4,252 @@
     <meta charset="UTF-8" />
     <title>Overlay Gacha</title>
     <link rel="stylesheet" href="/styles/overlay.css" />
+    <link rel="stylesheet" href="/components/cardPackage/cardPackage.css" />
+    <link rel="stylesheet" href="/components/card/card.css" />
   </head>
 
   <script>
-    const socket = new WebSocket("ws://localhost:49382");
+    const socketProtocol = window.location.protocol === "https:" ? "wss" : "ws";
+    const socketUrl = `${socketProtocol}://${window.location.host}`;
   </script>
 
   <body>
-    <div class="overlay">
-      <img class="pack" id="pack" src="/imgs/card/Package.png" />
-
-      <div class="card" id="card">
-        <img class="card-bg" src="/imgs/card/Photoroom.png" />
-        <img class="card-item" id="img" />
-        <div class="name" id="name"></div>
-      </div>
-    </div>
+    <div class="overlay" id="overlayMount"></div>
 
     <script>
+      const CARD_FALLBACK_IMAGE = "/card/temp.png";
+      const DEFAULT_PACK_LABEL = "SUCATAS PACK";
+      const DEFAULT_CARD_STYLE = {
+        "--pack-main": "#1f356d",
+        "--pack-accent": "#4b73f9",
+        "--pack-edge": "#8ca3ff",
+        "--pack-label": "#f5f8ff",
+        "--card-main": "#211e31",
+        "--card-accent": "#465de0",
+        "--card-edge": "#9fb4ff",
+        "--card-text": "#ffffff",
+      };
+      const EMPTY_IMAGE_STYLE = {
+        packImageData: "",
+        cardImageData: "",
+      };
+      const INITIAL_CARD_CONFIG = {
+        style: { ...DEFAULT_CARD_STYLE },
+        packLabel: DEFAULT_PACK_LABEL,
+        images: { ...EMPTY_IMAGE_STYLE },
+      };
       const gachaQueue = [];
       let isPlaying = false;
       const CARD_FADE_MS = 650;
       const NEXT_PACK_DELAY_MS = 1000;
+      const SOCKET_RECONNECT_INITIAL_DELAY_MS = 1000;
+      const SOCKET_RECONNECT_MAX_DELAY_MS = 10000;
+      let currentCardConfig = { ...INITIAL_CARD_CONFIG };
+      let socket = null;
+      let socketReconnectDelayMs = SOCKET_RECONNECT_INITIAL_DELAY_MS;
+      let socketReconnectTimeoutId = null;
+
+      function applyCardStyle(styleConfig) {
+        Object.entries(styleConfig).forEach(([cssVar, value]) => {
+          if (!cssVar.startsWith("--")) return;
+          if (typeof value !== "string") return;
+          document.documentElement.style.setProperty(cssVar, value.trim());
+        });
+      }
+
+      function normalizePackLabel(value) {
+        if (typeof value !== "string") {
+          return DEFAULT_PACK_LABEL;
+        }
+        return value;
+      }
+
+      function sanitizeImageData(value) {
+        if (typeof value !== "string") return "";
+        const normalized = value.trim();
+        if (!normalized) return "";
+        return normalized.startsWith("data:image/") ? normalized : "";
+      }
+
+      function applyImportedImages(imageConfig) {
+        const packImage = sanitizeImageData(imageConfig?.packImageData);
+        const cardImage = sanitizeImageData(imageConfig?.cardImageData);
+
+        document.documentElement.style.setProperty(
+          "--pack-custom-image",
+          packImage ? `url(\"${packImage}\")` : "none",
+        );
+        document.documentElement.style.setProperty(
+          "--card-custom-image",
+          cardImage ? `url(\"${cardImage}\")` : "none",
+        );
+
+        document.documentElement.classList.toggle(
+          "has-pack-custom-image",
+          Boolean(packImage),
+        );
+        document.documentElement.classList.toggle(
+          "has-card-custom-image",
+          Boolean(cardImage),
+        );
+      }
+
+      function normalizeCardConfig(raw) {
+        const parsed = raw && typeof raw === "object" ? raw : {};
+        return {
+          style: {
+            ...DEFAULT_CARD_STYLE,
+            ...parsed,
+          },
+          packLabel: normalizePackLabel(parsed.packLabel),
+          images: {
+            packImageData: sanitizeImageData(parsed.packImageData),
+            cardImageData: sanitizeImageData(parsed.cardImageData),
+          },
+        };
+      }
+
+      async function loadCardConfigFromServer() {
+        const res = await fetch("/api/card-style", { cache: "no-store" });
+        const data = await res.json();
+        if (!res.ok || data.ok === false || !data.config) {
+          throw new Error(data.message || "Falha ao carregar personalizacao");
+        }
+        return normalizeCardConfig(data.config);
+      }
+
+      async function refreshCardConfigFromServer() {
+        try {
+          const loadedConfig = await loadCardConfigFromServer();
+          currentCardConfig = loadedConfig;
+          applyCardStyle(currentCardConfig.style);
+          applyImportedImages(currentCardConfig.images);
+          applyPackLabel(currentCardConfig.packLabel);
+        } catch {
+          // Mantem a ultima configuracao valida em caso de falha temporaria.
+        }
+      }
+
+      function applyPackLabel(packLabel) {
+        const labelEl = document.getElementById("packLabel");
+        if (!labelEl) return;
+        labelEl.textContent = normalizePackLabel(packLabel);
+      }
+
+      async function loadOverlayComponents() {
+        const mount = document.getElementById("overlayMount");
+        if (!mount) return;
+
+        const [packRes, cardRes] = await Promise.all([
+          fetch("/components/cardPackage/cardPackage.html"),
+          fetch("/components/card/card.html"),
+        ]);
+
+        if (!packRes.ok || !cardRes.ok) {
+          throw new Error("Falha ao carregar componentes da overlay");
+        }
+
+        const [packHtml, cardHtml] = await Promise.all([
+          packRes.text(),
+          cardRes.text(),
+        ]);
+
+        mount.innerHTML = `${packHtml}${cardHtml}`;
+
+        if (currentCardConfig) {
+          applyCardStyle(currentCardConfig.style);
+          applyImportedImages(currentCardConfig.images);
+          applyPackLabel(currentCardConfig.packLabel);
+        }
+      }
+
+      const componentsReady = loadOverlayComponents();
+      applyCardStyle(currentCardConfig.style);
+      applyImportedImages(currentCardConfig.images);
+      applyPackLabel(currentCardConfig.packLabel);
+
+      refreshCardConfigFromServer();
+      setInterval(refreshCardConfigFromServer, 2000);
 
       function sleep(ms) {
         return new Promise((r) => setTimeout(r, ms));
+      }
+
+      function handleSocketMessage(event) {
+        const data = JSON.parse(event.data);
+
+        if (data.type === "gacha") {
+          gachaQueue.push({
+            item: data.item,
+            drawId: data.drawId || "",
+          });
+          processQueue();
+        }
+      }
+
+      function scheduleSocketReconnect() {
+        if (socketReconnectTimeoutId) return;
+
+        const nextDelay = socketReconnectDelayMs;
+        socketReconnectTimeoutId = setTimeout(() => {
+          socketReconnectTimeoutId = null;
+          connectSocket();
+        }, nextDelay);
+
+        socketReconnectDelayMs = Math.min(
+          Math.floor(socketReconnectDelayMs * 1.8),
+          SOCKET_RECONNECT_MAX_DELAY_MS,
+        );
+      }
+
+      function connectSocket() {
+        try {
+          socket = new WebSocket(socketUrl);
+        } catch {
+          scheduleSocketReconnect();
+          return;
+        }
+
+        socket.onopen = () => {
+          socketReconnectDelayMs = SOCKET_RECONNECT_INITIAL_DELAY_MS;
+        };
+
+        socket.onmessage = (event) => {
+          try {
+            handleSocketMessage(event);
+          } catch {
+            // Ignora mensagens invalidas sem derrubar o socket.
+          }
+        };
+
+        socket.onclose = () => {
+          scheduleSocketReconnect();
+        };
+
+        socket.onerror = () => {
+          try {
+            socket.close();
+          } catch {}
+
+          scheduleSocketReconnect();
+        };
+      }
+
+      function setCardImage(imgEl, source) {
+        if (!imgEl) return;
+
+        imgEl.onerror = () => {
+          if (imgEl.dataset.fallbackApplied === "1") {
+            imgEl.onerror = null;
+            return;
+          }
+
+          imgEl.dataset.fallbackApplied = "1";
+          imgEl.src = CARD_FALLBACK_IMAGE;
+        };
+
+        imgEl.dataset.fallbackApplied = "0";
+        imgEl.src = String(source || "").trim() || CARD_FALLBACK_IMAGE;
       }
 
       async function processQueue() {
@@ -37,6 +258,8 @@
         }
 
         isPlaying = true;
+
+        await componentsReady;
 
         while (gachaQueue.length > 0) {
           const nextDraw = gachaQueue.shift();
@@ -56,8 +279,13 @@
         const img = document.getElementById("img");
         const name = document.getElementById("name");
 
-        img.src = item.image;
-        // name.innerText = item.name;
+        if (!pack || !card || !img || !name) {
+          return;
+        }
+
+        applyPackLabel(currentCardConfig?.packLabel ?? DEFAULT_PACK_LABEL);
+        setCardImage(img, item.image);
+        name.innerText = item.name;
 
         pack.style.transform = "scale(1)";
         pack.style.animation = "none";
@@ -79,10 +307,11 @@
         await sleep(CARD_FADE_MS);
 
         // limpa o conteúdo da carta após sumir para evitar vazamento visual
-        img.src = "";
+        img.onerror = null;
+        img.removeAttribute("src");
         name.innerText = "";
 
-        if (drawId && socket.readyState === WebSocket.OPEN) {
+        if (drawId && socket && socket.readyState === WebSocket.OPEN) {
           socket.send(
             JSON.stringify({
               type: "gacha_animation_finished",
@@ -92,17 +321,7 @@
         }
       }
 
-      socket.onmessage = (event) => {
-        const data = JSON.parse(event.data);
-
-        if (data.type === "gacha") {
-          gachaQueue.push({
-            item: data.item,
-            drawId: data.drawId || "",
-          });
-          processQueue();
-        }
-      };
+      connectSocket();
     </script>
   </body>
 </html>

@@ -32,6 +32,7 @@ const AUTH_CACHE_DIR = path.join(
 const AUTH_CACHE_FILE = path.join(AUTH_CACHE_DIR, "twitch-auth.json");
 const RUNTIME_DATA_DIR = path.join(AUTH_CACHE_DIR, "runtime");
 const RUNTIME_IMGS_DIR = path.join(RUNTIME_DATA_DIR, "imgs");
+const CARD_STYLE_FILE = path.join(RUNTIME_DATA_DIR, "card-style.json");
 const REDEMPTIONS_LOG_FILE = path.join(RUNTIME_DATA_DIR, "resgates.txt");
 const IMPORTED_ITEMS_FILE = path.join(RUNTIME_DATA_DIR, "importedItems.txt");
 const ITEMS_UPLOAD_DIR = path.join(RUNTIME_IMGS_DIR, "items");
@@ -39,6 +40,7 @@ const LEGACY_PLUSHIES_UPLOAD_DIR = path.join(RUNTIME_IMGS_DIR, "plushies");
 const BUNDLED_IMGS_DIR = path.join(PROJECT_ROOT_DIR, "imgs");
 const PUBLIC_FILES = new Set([
   "importItems.html",
+  "cardCustomization.html",
   "overlay.html",
   "twitchControl.html",
   "twitchCallback.html",
@@ -58,6 +60,20 @@ const twitchState = {
 };
 
 const pendingChatByDrawId = new Map();
+
+const DEFAULT_CARD_STYLE_CONFIG = {
+  "--pack-main": "#1f356d",
+  "--pack-accent": "#4b73f9",
+  "--pack-edge": "#8ca3ff",
+  "--pack-label": "#f5f8ff",
+  "--card-main": "#211e31",
+  "--card-accent": "#465de0",
+  "--card-edge": "#9fb4ff",
+  "--card-text": "#ffffff",
+  packLabel: "SUCATAS PACK",
+  packImageData: "",
+  cardImageData: "",
+};
 
 function ensureAuthCacheDir() {
   if (!fs.existsSync(AUTH_CACHE_DIR)) {
@@ -168,6 +184,88 @@ function parseRewardEnabled(value, fallback = DEFAULT_REWARD_ENABLED) {
   }
   if (typeof value === "number") return value !== 0;
   return fallback;
+}
+
+function sanitizeHex(value, fallback) {
+  const normalized = String(value || "").trim();
+  return /^#[0-9a-fA-F]{6}$/.test(normalized) ? normalized : fallback;
+}
+
+function sanitizeImageData(value) {
+  const normalized = String(value || "").trim();
+  if (!normalized) return "";
+  if (!normalized.startsWith("data:image/")) return "";
+  return normalized.length <= 8_000_000 ? normalized : "";
+}
+
+function normalizeCardStyleConfig(raw) {
+  const parsed = raw && typeof raw === "object" ? raw : {};
+
+  return {
+    "--pack-main": sanitizeHex(
+      parsed["--pack-main"],
+      DEFAULT_CARD_STYLE_CONFIG["--pack-main"],
+    ),
+    "--pack-accent": sanitizeHex(
+      parsed["--pack-accent"],
+      DEFAULT_CARD_STYLE_CONFIG["--pack-accent"],
+    ),
+    "--pack-edge": sanitizeHex(
+      parsed["--pack-edge"],
+      DEFAULT_CARD_STYLE_CONFIG["--pack-edge"],
+    ),
+    "--pack-label": sanitizeHex(
+      parsed["--pack-label"],
+      DEFAULT_CARD_STYLE_CONFIG["--pack-label"],
+    ),
+    "--card-main": sanitizeHex(
+      parsed["--card-main"],
+      DEFAULT_CARD_STYLE_CONFIG["--card-main"],
+    ),
+    "--card-accent": sanitizeHex(
+      parsed["--card-accent"],
+      DEFAULT_CARD_STYLE_CONFIG["--card-accent"],
+    ),
+    "--card-edge": sanitizeHex(
+      parsed["--card-edge"],
+      DEFAULT_CARD_STYLE_CONFIG["--card-edge"],
+    ),
+    "--card-text": sanitizeHex(
+      parsed["--card-text"],
+      DEFAULT_CARD_STYLE_CONFIG["--card-text"],
+    ),
+    packLabel: String(
+      parsed.packLabel || DEFAULT_CARD_STYLE_CONFIG.packLabel,
+    ).slice(0, 80),
+    packImageData: sanitizeImageData(parsed.packImageData),
+    cardImageData: sanitizeImageData(parsed.cardImageData),
+  };
+}
+
+function loadCardStyleConfig() {
+  try {
+    ensureRuntimeDirs();
+    if (!fs.existsSync(CARD_STYLE_FILE)) {
+      return { ...DEFAULT_CARD_STYLE_CONFIG };
+    }
+
+    const raw = fs.readFileSync(CARD_STYLE_FILE, "utf8");
+    const parsed = JSON.parse(raw);
+    return normalizeCardStyleConfig(parsed);
+  } catch {
+    return { ...DEFAULT_CARD_STYLE_CONFIG };
+  }
+}
+
+function saveCardStyleConfig(config) {
+  ensureRuntimeDirs();
+  const normalized = normalizeCardStyleConfig(config);
+  fs.writeFileSync(
+    CARD_STYLE_FILE,
+    `${JSON.stringify(normalized, null, 2)}\n`,
+    "utf8",
+  );
+  return normalized;
 }
 
 function createItemId() {
@@ -363,7 +461,7 @@ function readJsonBody(req) {
     let raw = "";
     req.on("data", (chunk) => {
       raw += chunk;
-      if (raw.length > 1_000_000) {
+      if (raw.length > 8_000_000) {
         reject(new Error("Payload muito grande"));
       }
     });
@@ -966,6 +1064,33 @@ function startTwitchMonitor(config) {
 }
 
 async function handleApiRoutes(req, res, cleanPath) {
+  if (cleanPath === "/api/card-style" && req.method === "GET") {
+    sendJson(res, 200, {
+      ok: true,
+      config: loadCardStyleConfig(),
+    });
+    return true;
+  }
+
+  if (cleanPath === "/api/card-style" && req.method === "POST") {
+    try {
+      const body = await readJsonBody(req);
+      const config = saveCardStyleConfig(body);
+      sendJson(res, 200, {
+        ok: true,
+        config,
+      });
+      return true;
+    } catch (err) {
+      sendJson(res, 400, {
+        ok: false,
+        message:
+          err instanceof Error ? err.message : "Erro ao salvar personalizacao",
+      });
+      return true;
+    }
+  }
+
   if (cleanPath === "/api/items" && req.method === "GET") {
     sendJson(res, 200, {
       ok: true,
@@ -1531,6 +1656,30 @@ const server = http.createServer((req, res) => {
       }
 
       res.writeHead(200, { "Content-Type": getContentType(componentPath) });
+      res.end(data);
+    });
+    return;
+  }
+
+  if (cleanPath.startsWith("/card/")) {
+    const relativeCardPath = cleanPath.slice("/card/".length);
+    const cardPath = path.resolve(BUNDLED_IMGS_DIR, "card", relativeCardPath);
+    const cardsRoot = path.resolve(BUNDLED_IMGS_DIR, "card");
+
+    if (!cardPath.startsWith(cardsRoot)) {
+      res.writeHead(403, { "Content-Type": "text/plain; charset=utf-8" });
+      res.end("Acesso negado");
+      return;
+    }
+
+    fs.readFile(cardPath, (err, data) => {
+      if (err) {
+        res.writeHead(404, { "Content-Type": "text/plain; charset=utf-8" });
+        res.end("Arquivo nao encontrado");
+        return;
+      }
+
+      res.writeHead(200, { "Content-Type": getContentType(cardPath) });
       res.end(data);
     });
     return;

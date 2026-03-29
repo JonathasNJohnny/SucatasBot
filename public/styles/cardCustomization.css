@@ -1,0 +1,134 @@
+.wrap {
+  max-width: 1080px;
+}
+
+.grid {
+  display: grid;
+  grid-template-columns: 1fr;
+  gap: 18px;
+}
+
+@media (min-width: 920px) {
+  .grid {
+    grid-template-columns: 1fr 1fr;
+  }
+}
+
+.group {
+  border: 1px solid var(--line);
+  border-radius: 12px;
+  padding: 14px;
+  background: color-mix(in srgb, var(--panel) 92%, transparent);
+}
+
+.group h2 {
+  margin: 0 0 12px;
+  font-size: 16px;
+}
+
+.pack-name-field {
+  margin-bottom: 12px;
+}
+
+.color-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(220px, 1fr));
+  gap: 12px;
+}
+
+.field-row {
+  display: flex;
+  gap: 10px;
+  align-items: center;
+}
+
+.field-row input[type="color"] {
+  width: 48px;
+  height: 36px;
+  padding: 4px;
+  border-radius: 10px;
+  border: 1px solid var(--line);
+  background: var(--input-bg);
+}
+
+.field-row input[type="text"] {
+  flex: 1;
+}
+
+.import-box {
+  margin-top: 14px;
+  border-top: 1px solid var(--line);
+  padding-top: 12px;
+}
+
+.import-title {
+  display: block;
+  margin-bottom: 8px;
+  font-size: 13px;
+  color: var(--muted);
+}
+
+.import-actions {
+  display: flex;
+  gap: 8px;
+  flex-wrap: wrap;
+}
+
+.import-actions .ghost {
+  background: transparent;
+  border: 1px solid var(--line);
+  color: var(--text);
+}
+
+.import-box small {
+  display: block;
+  margin-top: 8px;
+  color: var(--muted);
+}
+
+.preview-area {
+  margin-top: 18px;
+  border: 1px solid var(--line);
+  border-radius: 12px;
+  min-height: 390px;
+  background: radial-gradient(
+    circle at 50% 0%,
+    color-mix(in srgb, var(--bg-accent) 80%, transparent) 0%,
+    transparent 60%
+  );
+  position: relative;
+}
+
+.preview-area .overlay {
+  position: absolute;
+  inset: 0;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 28px;
+  padding: 14px;
+}
+
+.preview-area .overlay #pack,
+.preview-area .overlay #card {
+  position: relative;
+}
+
+@media (max-width: 860px) {
+  .preview-area .overlay {
+    flex-direction: column;
+    gap: 16px;
+  }
+}
+
+.actions {
+  margin-top: 16px;
+  display: flex;
+  gap: 10px;
+  flex-wrap: wrap;
+}
+
+#saveStatus {
+  margin-top: 12px;
+  color: var(--muted);
+}

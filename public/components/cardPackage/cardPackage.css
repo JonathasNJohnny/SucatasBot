@@ -1,0 +1,94 @@
+.card-package {
+  --pack-glow: color-mix(in srgb, var(--pack-accent) 38%, transparent);
+  position: absolute;
+  width: 230px;
+  height: 315px;
+  border-radius: 14px;
+  background: linear-gradient(
+    150deg,
+    var(--pack-accent) 0%,
+    var(--pack-main) 48%,
+    color-mix(in srgb, var(--pack-main) 80%, #000000) 100%
+  );
+  border: 2px solid var(--pack-edge);
+  box-shadow:
+    0 12px 28px color-mix(in srgb, var(--pack-main) 45%, transparent),
+    inset 0 0 0 1px color-mix(in srgb, var(--pack-edge) 45%, transparent);
+  transform: scale(0);
+  overflow: hidden;
+  isolation: isolate;
+}
+
+:root.has-pack-custom-image .card-package {
+  background: var(--pack-custom-image) center / cover no-repeat;
+  border: 0;
+  box-shadow: 0 12px 28px color-mix(in srgb, var(--pack-main) 45%, transparent);
+}
+
+:root.has-pack-custom-image .card-package__foil,
+:root.has-pack-custom-image .card-package__teeth {
+  display: none;
+}
+
+.card-package__foil {
+  position: absolute;
+  inset: 0;
+  background:
+    linear-gradient(
+      120deg,
+      transparent 10%,
+      color-mix(in srgb, #ffffff 18%, transparent) 45%,
+      transparent 70%
+    ),
+    repeating-linear-gradient(
+      -22deg,
+      transparent 0 12px,
+      color-mix(in srgb, #ffffff 10%, transparent) 12px 16px
+    );
+  mix-blend-mode: screen;
+  opacity: 0.6;
+  pointer-events: none;
+}
+
+.card-package__label {
+  position: absolute;
+  left: 14px;
+  right: 14px;
+  bottom: 20px;
+  text-align: center;
+  font-size: 18px;
+  letter-spacing: 0.12em;
+  font-weight: 800;
+  color: var(--pack-label);
+  text-shadow: 0 3px 10px var(--pack-glow);
+  z-index: 2;
+}
+
+.card-package__teeth {
+  position: absolute;
+  left: 10px;
+  right: 10px;
+  height: 14px;
+  background:
+    repeating-linear-gradient(
+      -45deg,
+      var(--pack-edge) 0 7px,
+      transparent 7px 14px
+    ),
+    repeating-linear-gradient(
+      45deg,
+      var(--pack-edge) 0 7px,
+      transparent 7px 14px
+    );
+  opacity: 0.9;
+  z-index: 3;
+}
+
+.card-package__teeth--top {
+  top: -7px;
+}
+
+.card-package__teeth--bottom {
+  bottom: -7px;
+  transform: scaleY(-1);
+}

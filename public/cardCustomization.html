@@ -1,0 +1,589 @@
+<!doctype html>
+<html lang="pt-BR">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>Personalizacao de Cartas</title>
+    <link rel="stylesheet" href="/styles/general.css" />
+    <link rel="stylesheet" href="/styles/cardCustomization.css" />
+    <link rel="stylesheet" href="/components/cardPackage/cardPackage.css" />
+    <link rel="stylesheet" href="/components/card/card.css" />
+    <script src="/components/navbar/navbar-loader.js" defer></script>
+  </head>
+  <body>
+    <div id="navbarMount"></div>
+
+    <main class="wrap">
+      <section class="panel">
+        <h1>Personalizacao de Cartas</h1>
+        <p>
+          Ajuste as cores do pacote e da carta. As mudancas sao salvas e usadas
+          no overlay em tempo real.
+        </p>
+
+        <div class="grid">
+          <div class="group">
+            <h2>Pacote</h2>
+            <div class="field pack-name-field">
+              <label for="packLabelInput"
+                >Nome do pacote (pode ficar vazio)</label
+              >
+              <input
+                id="packLabelInput"
+                type="text"
+                placeholder="Ex.: Sucatas Pack"
+              />
+            </div>
+            <div class="color-grid" id="packageFields"></div>
+            <div class="import-box">
+              <label class="import-title" for="packImageInput"
+                >Imagem do pacote</label
+              >
+              <div class="import-actions">
+                <button type="button" id="btnImportPack">Importar</button>
+                <button type="button" id="btnClearPack" class="ghost danger">
+                  Remover
+                </button>
+              </div>
+              <input id="packImageInput" type="file" accept="image/*" hidden />
+              <small id="packImageStatus">Nenhuma imagem selecionada.</small>
+            </div>
+          </div>
+
+          <div class="group">
+            <h2>Carta</h2>
+            <div class="color-grid" id="cardFields"></div>
+            <div class="import-box">
+              <label class="import-title" for="cardImageInput"
+                >Imagem da carta</label
+              >
+              <div class="import-actions">
+                <button type="button" id="btnImportCard">Importar</button>
+                <button type="button" id="btnClearCard" class="ghost danger">
+                  Remover
+                </button>
+              </div>
+              <input id="cardImageInput" type="file" accept="image/*" hidden />
+              <small id="cardImageStatus">Nenhuma imagem selecionada.</small>
+            </div>
+          </div>
+        </div>
+
+        <div class="actions">
+          <button id="btnSave" class="save-button">Salvar</button>
+          <button id="btnReset" class="cancel-button">Restaurar Padrao</button>
+        </div>
+
+        <div id="saveStatus">Aguardando alteracoes...</div>
+
+        <div class="preview-area">
+          <div class="overlay" id="previewMount"></div>
+        </div>
+      </section>
+    </main>
+
+    <script>
+      const STORAGE_KEY = "sucatasbot-card-style";
+      const CARD_FALLBACK_IMAGE = "/card/temp.png";
+      const DEFAULT_PACK_LABEL = "SUCATAS PACK";
+      const saveStatusEl = document.getElementById("saveStatus");
+      const packageFieldsEl = document.getElementById("packageFields");
+      const cardFieldsEl = document.getElementById("cardFields");
+      const packLabelInputEl = document.getElementById("packLabelInput");
+      const btnImportPack = document.getElementById("btnImportPack");
+      const btnImportCard = document.getElementById("btnImportCard");
+      const btnClearPack = document.getElementById("btnClearPack");
+      const btnClearCard = document.getElementById("btnClearCard");
+      const packImageInputEl = document.getElementById("packImageInput");
+      const cardImageInputEl = document.getElementById("cardImageInput");
+      const packImageStatusEl = document.getElementById("packImageStatus");
+      const cardImageStatusEl = document.getElementById("cardImageStatus");
+      const btnSave = document.getElementById("btnSave");
+      const btnReset = document.getElementById("btnReset");
+      const MAX_IMAGE_BYTES = 4 * 1024 * 1024;
+
+      let selectedPackImageData = "";
+      let selectedCardImageData = "";
+
+      const colorFields = [
+        {
+          section: "package",
+          label: "Pacote - Fundo",
+          cssVar: "--pack-main",
+          defaultValue: "#1f356d",
+        },
+        {
+          section: "package",
+          label: "Pacote - Brilho",
+          cssVar: "--pack-accent",
+          defaultValue: "#4b73f9",
+        },
+        {
+          section: "package",
+          label: "Pacote - Borda / Dentes",
+          cssVar: "--pack-edge",
+          defaultValue: "#8ca3ff",
+        },
+        {
+          section: "package",
+          label: "Pacote - Texto",
+          cssVar: "--pack-label",
+          defaultValue: "#f5f8ff",
+        },
+        {
+          section: "card",
+          label: "Carta - Fundo",
+          cssVar: "--card-main",
+          defaultValue: "#211e31",
+        },
+        {
+          section: "card",
+          label: "Carta - Brilho",
+          cssVar: "--card-accent",
+          defaultValue: "#465de0",
+        },
+        {
+          section: "card",
+          label: "Carta - Borda",
+          cssVar: "--card-edge",
+          defaultValue: "#9fb4ff",
+        },
+        {
+          section: "card",
+          label: "Carta - Texto",
+          cssVar: "--card-text",
+          defaultValue: "#ffffff",
+        },
+      ];
+
+      const fieldByVar = new Map();
+
+      function sanitizeHex(value, fallback) {
+        const normalized = String(value || "").trim();
+        return /^#[0-9a-fA-F]{6}$/.test(normalized) ? normalized : fallback;
+      }
+
+      function getDefaultConfig() {
+        const baseConfig = colorFields.reduce((acc, field) => {
+          acc[field.cssVar] = field.defaultValue;
+          return acc;
+        }, {});
+
+        return {
+          ...baseConfig,
+          packLabel: DEFAULT_PACK_LABEL,
+          packImageData: "",
+          cardImageData: "",
+        };
+      }
+
+      function sanitizeImageData(value) {
+        if (typeof value !== "string") return "";
+        const normalized = value.trim();
+        if (!normalized) return "";
+        return normalized.startsWith("data:image/") ? normalized : "";
+      }
+
+      function normalizePackLabel(value) {
+        if (typeof value !== "string") {
+          return DEFAULT_PACK_LABEL;
+        }
+        return value;
+      }
+
+      function loadConfig() {
+        try {
+          const raw = localStorage.getItem(STORAGE_KEY);
+          if (!raw) return getDefaultConfig();
+
+          const parsed = JSON.parse(raw);
+          if (!parsed || typeof parsed !== "object") return getDefaultConfig();
+
+          const defaults = getDefaultConfig();
+          for (const field of colorFields) {
+            defaults[field.cssVar] = sanitizeHex(
+              parsed[field.cssVar],
+              field.defaultValue,
+            );
+          }
+
+          defaults.packLabel = normalizePackLabel(parsed.packLabel);
+          defaults.packImageData = sanitizeImageData(parsed.packImageData);
+          defaults.cardImageData = sanitizeImageData(parsed.cardImageData);
+
+          return defaults;
+        } catch {
+          return getDefaultConfig();
+        }
+      }
+
+      async function loadConfigFromServer() {
+        const res = await fetch("/api/card-style", { cache: "no-store" });
+        const data = await res.json();
+
+        if (!res.ok || data.ok === false || !data.config) {
+          throw new Error(data.message || "Falha ao carregar personalizacao");
+        }
+
+        const config = getDefaultConfig();
+        for (const field of colorFields) {
+          config[field.cssVar] = sanitizeHex(
+            data.config[field.cssVar],
+            field.defaultValue,
+          );
+        }
+
+        config.packLabel = normalizePackLabel(data.config.packLabel);
+        config.packImageData = sanitizeImageData(data.config.packImageData);
+        config.cardImageData = sanitizeImageData(data.config.cardImageData);
+        return config;
+      }
+
+      async function saveConfigToServer(config) {
+        const res = await fetch("/api/card-style", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify(config),
+        });
+        const data = await res.json();
+        if (!res.ok || data.ok === false) {
+          throw new Error(data.message || "Falha ao salvar personalizacao");
+        }
+      }
+
+      function applyImportedImagesToDocument(config) {
+        const packImage = sanitizeImageData(config.packImageData);
+        const cardImage = sanitizeImageData(config.cardImageData);
+
+        const packValue = packImage ? `url("${packImage}")` : "none";
+        const cardValue = cardImage ? `url("${cardImage}")` : "none";
+
+        document.documentElement.style.setProperty(
+          "--pack-custom-image",
+          packValue,
+        );
+        document.documentElement.style.setProperty(
+          "--card-custom-image",
+          cardValue,
+        );
+
+        document.documentElement.classList.toggle(
+          "has-pack-custom-image",
+          Boolean(packImage),
+        );
+        document.documentElement.classList.toggle(
+          "has-card-custom-image",
+          Boolean(cardImage),
+        );
+      }
+
+      function updateImageStatus() {
+        packImageStatusEl.textContent = selectedPackImageData
+          ? "Imagem do pacote pronta para salvar."
+          : "Nenhuma imagem selecionada.";
+        cardImageStatusEl.textContent = selectedCardImageData
+          ? "Imagem da carta pronta para salvar."
+          : "Nenhuma imagem selecionada.";
+      }
+
+      function readFileAsDataUrl(file) {
+        return new Promise((resolve, reject) => {
+          const reader = new FileReader();
+          reader.onload = () => resolve(String(reader.result || ""));
+          reader.onerror = () => reject(new Error("Falha ao ler imagem"));
+          reader.readAsDataURL(file);
+        });
+      }
+
+      async function importImageFromInput(inputEl, target) {
+        const [file] = inputEl.files || [];
+        inputEl.value = "";
+
+        if (!file) return;
+
+        if (!file.type.startsWith("image/")) {
+          setStatus("Arquivo invalido. Selecione uma imagem.", true);
+          return;
+        }
+
+        if (file.size > MAX_IMAGE_BYTES) {
+          setStatus("Imagem muito grande. Use arquivos de ate 4MB.", true);
+          return;
+        }
+
+        try {
+          const dataUrl = sanitizeImageData(await readFileAsDataUrl(file));
+          if (!dataUrl) {
+            setStatus("Nao foi possivel importar esta imagem.", true);
+            return;
+          }
+
+          if (target === "pack") {
+            selectedPackImageData = dataUrl;
+          } else {
+            selectedCardImageData = dataUrl;
+          }
+
+          applyImportedImagesToDocument({
+            packImageData: selectedPackImageData,
+            cardImageData: selectedCardImageData,
+          });
+          updateImageStatus();
+          setStatus(
+            "Imagem importada. Clique em salvar para aplicar no overlay.",
+          );
+        } catch {
+          setStatus("Erro ao ler imagem selecionada.", true);
+        }
+      }
+
+      function applyConfigToDocument(config) {
+        for (const [cssVar, value] of Object.entries(config)) {
+          if (!cssVar.startsWith("--")) continue;
+          document.documentElement.style.setProperty(cssVar, value);
+        }
+      }
+
+      function applyPackLabelToPreview(labelText) {
+        const packLabelPreview = document.getElementById("packLabel");
+        if (!packLabelPreview) return;
+        packLabelPreview.textContent = String(labelText ?? "");
+      }
+
+      function writeConfigToFields(config) {
+        for (const field of colorFields) {
+          const refs = fieldByVar.get(field.cssVar);
+          if (!refs) continue;
+
+          refs.colorInput.value = config[field.cssVar];
+          refs.textInput.value = config[field.cssVar].toUpperCase();
+        }
+
+        packLabelInputEl.value = normalizePackLabel(config.packLabel);
+        selectedPackImageData = sanitizeImageData(config.packImageData);
+        selectedCardImageData = sanitizeImageData(config.cardImageData);
+        updateImageStatus();
+      }
+
+      function collectConfigFromFields() {
+        const defaults = getDefaultConfig();
+        for (const field of colorFields) {
+          const refs = fieldByVar.get(field.cssVar);
+          if (!refs) continue;
+
+          defaults[field.cssVar] = sanitizeHex(
+            refs.textInput.value,
+            field.defaultValue,
+          );
+        }
+
+        defaults.packLabel = String(packLabelInputEl.value ?? "");
+        defaults.packImageData = selectedPackImageData;
+        defaults.cardImageData = selectedCardImageData;
+        return defaults;
+      }
+
+      function setStatus(text, isError = false) {
+        saveStatusEl.textContent = text;
+        saveStatusEl.className = isError ? "danger" : "";
+      }
+
+      function createColorField(field) {
+        const wrapper = document.createElement("div");
+        wrapper.className = "field";
+
+        const label = document.createElement("label");
+        label.textContent = field.label;
+
+        const row = document.createElement("div");
+        row.className = "field-row";
+
+        const colorInput = document.createElement("input");
+        colorInput.type = "color";
+
+        const textInput = document.createElement("input");
+        textInput.type = "text";
+        textInput.placeholder = "#000000";
+
+        colorInput.addEventListener("input", () => {
+          textInput.value = colorInput.value.toUpperCase();
+          const liveValue = sanitizeHex(colorInput.value, field.defaultValue);
+          document.documentElement.style.setProperty(field.cssVar, liveValue);
+        });
+
+        textInput.addEventListener("input", () => {
+          const value = sanitizeHex(textInput.value, field.defaultValue);
+          colorInput.value = value;
+          document.documentElement.style.setProperty(field.cssVar, value);
+        });
+
+        row.appendChild(colorInput);
+        row.appendChild(textInput);
+        wrapper.appendChild(label);
+        wrapper.appendChild(row);
+
+        fieldByVar.set(field.cssVar, {
+          colorInput,
+          textInput,
+        });
+
+        return wrapper;
+      }
+
+      async function loadPreviewComponents() {
+        const mount = document.getElementById("previewMount");
+        if (!mount) return;
+
+        const [packRes, cardRes] = await Promise.all([
+          fetch("/components/cardPackage/cardPackage.html"),
+          fetch("/components/card/card.html"),
+        ]);
+
+        if (!packRes.ok || !cardRes.ok) {
+          throw new Error("Falha ao carregar preview dos componentes");
+        }
+
+        const [packHtml, cardHtml] = await Promise.all([
+          packRes.text(),
+          cardRes.text(),
+        ]);
+
+        mount.innerHTML = `${packHtml}${cardHtml}`;
+
+        const card = mount.querySelector("#card");
+        const name = mount.querySelector("#name");
+        const img = mount.querySelector("#img");
+        const pack = mount.querySelector("#pack");
+
+        if (card) {
+          card.style.transform = "translateY(0) scale(1)";
+          card.style.opacity = "1";
+        }
+        if (name) {
+          name.textContent = "Exemplo";
+        }
+        if (img) {
+          img.src = CARD_FALLBACK_IMAGE;
+          img.onerror = null;
+        }
+        if (pack) {
+          pack.style.transform = "scale(1)";
+          pack.style.animation = "packSwing 0.9s ease-in-out infinite";
+        }
+      }
+
+      function renderFields() {
+        for (const field of colorFields) {
+          const element = createColorField(field);
+          if (field.section === "package") {
+            packageFieldsEl.appendChild(element);
+          } else {
+            cardFieldsEl.appendChild(element);
+          }
+        }
+      }
+
+      packLabelInputEl.addEventListener("input", () => {
+        applyPackLabelToPreview(packLabelInputEl.value);
+      });
+
+      btnImportPack.addEventListener("click", () => {
+        packImageInputEl.click();
+      });
+
+      btnImportCard.addEventListener("click", () => {
+        cardImageInputEl.click();
+      });
+
+      packImageInputEl.addEventListener("change", () => {
+        importImageFromInput(packImageInputEl, "pack");
+      });
+
+      cardImageInputEl.addEventListener("change", () => {
+        importImageFromInput(cardImageInputEl, "card");
+      });
+
+      btnClearPack.addEventListener("click", () => {
+        selectedPackImageData = "";
+        applyImportedImagesToDocument({
+          packImageData: selectedPackImageData,
+          cardImageData: selectedCardImageData,
+        });
+        updateImageStatus();
+        setStatus("Imagem do pacote removida. Clique em salvar.");
+      });
+
+      btnClearCard.addEventListener("click", () => {
+        selectedCardImageData = "";
+        applyImportedImagesToDocument({
+          packImageData: selectedPackImageData,
+          cardImageData: selectedCardImageData,
+        });
+        updateImageStatus();
+        setStatus("Imagem da carta removida. Clique em salvar.");
+      });
+
+      btnSave.addEventListener("click", async () => {
+        const config = collectConfigFromFields();
+        try {
+          await saveConfigToServer(config);
+          localStorage.setItem(STORAGE_KEY, JSON.stringify(config));
+          applyConfigToDocument(config);
+          applyImportedImagesToDocument(config);
+          applyPackLabelToPreview(config.packLabel);
+          setStatus("Cores e imagens salvas com sucesso.");
+        } catch (err) {
+          setStatus(
+            `Erro ao salvar personalizacao: ${err instanceof Error ? err.message : "falha desconhecida"}`,
+            true,
+          );
+        }
+      });
+
+      btnReset.addEventListener("click", async () => {
+        const defaults = getDefaultConfig();
+        try {
+          await saveConfigToServer(defaults);
+          localStorage.setItem(STORAGE_KEY, JSON.stringify(defaults));
+          writeConfigToFields(defaults);
+          applyConfigToDocument(defaults);
+          applyImportedImagesToDocument(defaults);
+          applyPackLabelToPreview(defaults.packLabel);
+          setStatus("Padrao restaurado.");
+        } catch (err) {
+          setStatus(
+            `Erro ao restaurar padrao: ${err instanceof Error ? err.message : "falha desconhecida"}`,
+            true,
+          );
+        }
+      });
+
+      window.addEventListener("DOMContentLoaded", async () => {
+        renderFields();
+
+        let initialConfig = getDefaultConfig();
+        try {
+          initialConfig = await loadConfigFromServer();
+          localStorage.setItem(STORAGE_KEY, JSON.stringify(initialConfig));
+        } catch {
+          initialConfig = loadConfig();
+        }
+
+        writeConfigToFields(initialConfig);
+        applyConfigToDocument(initialConfig);
+        applyImportedImagesToDocument(initialConfig);
+
+        try {
+          await loadPreviewComponents();
+        } catch {
+          setStatus("Nao foi possivel carregar preview dos componentes.", true);
+          return;
+        }
+
+        applyPackLabelToPreview(initialConfig.packLabel);
+
+        setStatus("Ajuste as cores e clique em salvar.");
+      });
+    </script>
+  </body>
+</html>

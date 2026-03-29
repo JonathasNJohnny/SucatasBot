@@ -29,6 +29,7 @@
   --error: #ff6b6b;
 
   /* BUTTONS */
+  --button-save: #3ecf8e;
   --button-primary: #5b7cff;
   --button-primary-alt: #6a88ff;
   --button-stop: #c45454;
@@ -47,6 +48,16 @@
   /* BRAND (bem mais neutro agora) */
   --brand-grad-start: #5b7cff;
   --brand-grad-end: #8aa4ff;
+
+  /* OVERLAY CARDS */
+  --pack-main: #1f356d;
+  --pack-accent: #4b73f9;
+  --pack-edge: #8ca3ff;
+  --pack-label: #f5f8ff;
+  --card-main: #211e31;
+  --card-accent: #465de0;
+  --card-edge: #9fb4ff;
+  --card-text: #ffffff;
 
   /* SHADOWS */
   --shadow-strong: 0 18px 40px rgba(0, 0, 0, 0.45);
@@ -87,6 +98,7 @@ html[data-theme="light"] {
   --error: #d64545;
 
   /* BUTTONS (mesma identidade do dark) */
+  --button-save: #3ecf8e;
   --button-primary: #5b7cff;
   --button-primary-alt: #6a88ff;
   --button-stop: #c45454;
@@ -105,6 +117,16 @@ html[data-theme="light"] {
   /* BRAND (mesmo gradiente = consistência visual) */
   --brand-grad-start: #2f57f8;
   --brand-grad-end: #6183ff;
+
+  /* OVERLAY CARDS */
+  --pack-main: #4d6dc7;
+  --pack-accent: #6f92ff;
+  --pack-edge: #90a9ff;
+  --pack-label: #ffffff;
+  --card-main: #f3f6ff;
+  --card-accent: #7b95ff;
+  --card-edge: #4a66d8;
+  --card-text: #1e2e6b;
 
   /* SHADOWS */
   --shadow-strong: 0 10px 25px rgba(30, 60, 120, 0.12);

@@ -115,3 +115,19 @@ button:hover {
 .danger {
   color: var(--danger);
 }
+
+.save-button {
+  background: var(--button-save);
+  border: 0;
+  color: var(--text-inverse);
+  padding: 10px 18px;
+  border-radius: 8px;
+}
+
+.cancel-button {
+  background: var(--button-stop);
+  border: 0;
+  color: var(--text-inverse);
+  padding: 10px 18px;
+  border-radius: 8px;
+}
