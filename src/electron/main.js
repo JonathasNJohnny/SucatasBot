@@ -1,4 +1,5 @@
-const { app, BrowserWindow, Menu, Tray, ipcMain } = require("electron");
+const { app, BrowserWindow, Menu, Tray, ipcMain, dialog } = require("electron");
+const { autoUpdater } = require("electron-updater");
 const path = require("path");
 const fs = require("fs");
 const {
@@ -14,6 +15,109 @@ let serverModule = null;
 let mainWindow = null;
 let tray = null;
 let isQuitting = false;
+
+function parseTagVersion(versionLike) {
+  const raw = String(versionLike || "").trim();
+  if (!raw) {
+    return null;
+  }
+
+  const withoutV =
+    raw.startsWith("v") || raw.startsWith("V") ? raw.slice(1) : raw;
+  const match = withoutV.match(/^(\d+)\.(\d+)\.(\d+)$/);
+  if (!match) {
+    return null;
+  }
+
+  return {
+    major: Number(match[1]),
+    minor: Number(match[2]),
+    patch: Number(match[3]),
+    normalized: `${Number(match[1])}.${Number(match[2])}.${Number(match[3])}`,
+  };
+}
+
+function isRemoteVersionGreater(currentVersion, remoteVersion) {
+  const current = parseTagVersion(currentVersion);
+  const remote = parseTagVersion(remoteVersion);
+
+  if (!current || !remote) {
+    return false;
+  }
+
+  if (remote.major !== current.major) {
+    return remote.major > current.major;
+  }
+
+  if (remote.minor !== current.minor) {
+    return remote.minor > current.minor;
+  }
+
+  return remote.patch > current.patch;
+}
+
+async function checkForUpdatesBeforeStart() {
+  // Atualizacao automatica funciona em app empacotado com release publicado.
+  if (!app.isPackaged) {
+    return false;
+  }
+
+  autoUpdater.autoDownload = false;
+  autoUpdater.autoInstallOnAppQuit = false;
+  autoUpdater.allowPrerelease = false;
+
+  try {
+    const currentVersion = app.getVersion();
+    const updateCheckResult = await autoUpdater.checkForUpdates();
+    const nextVersionRaw = updateCheckResult?.updateInfo?.version;
+    const nextVersionParsed = parseTagVersion(nextVersionRaw);
+
+    if (!nextVersionParsed) {
+      return false;
+    }
+
+    const nextVersion = nextVersionParsed.normalized;
+
+    // Atualiza apenas se a proxima tag/version for superior a atual.
+    if (!isRemoteVersionGreater(currentVersion, nextVersion)) {
+      return false;
+    }
+
+    const { response } = await dialog.showMessageBox({
+      type: "info",
+      buttons: ["Sim, atualizar", "Nao, continuar"],
+      defaultId: 0,
+      cancelId: 1,
+      noLink: true,
+      title: "Atualizacao disponivel",
+      message: `Nova versao disponivel: ${nextVersion}`,
+      detail: "Deseja atualizar agora antes de abrir o app?",
+    });
+
+    if (response !== 0) {
+      return false;
+    }
+
+    await autoUpdater.downloadUpdate();
+
+    await dialog.showMessageBox({
+      type: "info",
+      buttons: ["OK"],
+      defaultId: 0,
+      noLink: true,
+      title: "Atualizacao pronta",
+      message: "Atualizacao baixada com sucesso.",
+      detail: "O app sera reiniciado para concluir a instalacao.",
+    });
+
+    isQuitting = true;
+    autoUpdater.quitAndInstall(false, true);
+    return true;
+  } catch (error) {
+    console.error("Falha ao verificar/baixar atualizacao:", error);
+    return false;
+  }
+}
 
 function showMainWindow() {
   if (!mainWindow || mainWindow.isDestroyed()) {
@@ -119,52 +223,58 @@ function createWindowsAfterSetup() {
 }
 
 app.whenReady().then(() => {
-  createPreloadFile();
-  const preloadPath = path.join(__dirname, "preload.js");
+  checkForUpdatesBeforeStart().then((isInstallingUpdate) => {
+    if (isInstallingUpdate) {
+      return;
+    }
 
-  const hasClientCredentials = hasClientCredentialsInCache();
+    createPreloadFile();
+    const preloadPath = path.join(__dirname, "preload.js");
 
-  const setupEnvHandler = () => {
-    ipcMain.handle("save-config", async (event, data) => {
-      if (!data || !data.clientId || !data.clientSecret) {
-        return { success: false, message: "Dados inválidos" };
-      }
+    const hasClientCredentials = hasClientCredentialsInCache();
 
-      try {
-        ensureAuthCacheDir();
-        const cached = loadCachedConfig();
-        fs.writeFileSync(
-          AUTH_CACHE_FILE,
-          JSON.stringify(
-            {
-              ...cached,
-              clientId: String(data.clientId || "").trim(),
-              clientSecret: String(data.clientSecret || "").trim(),
-              credentialsUpdatedAt: new Date().toISOString(),
-            },
-            null,
-            2,
-          ),
-          "utf8",
-        );
-        loadServer();
-        setTimeout(createWindowsAfterSetup, 1000);
-        return { success: true };
-      } catch (err) {
-        console.error("Erro ao salvar cache:", err);
-        return { success: false, message: err.message };
-      }
-    });
-  };
+    const setupEnvHandler = () => {
+      ipcMain.handle("save-config", async (event, data) => {
+        if (!data || !data.clientId || !data.clientSecret) {
+          return { success: false, message: "Dados invalidos" };
+        }
 
-  if (!hasClientCredentials) {
-    createSetupWindow(preloadPath);
-    setupEnvHandler();
-  } else {
-    // Credenciais já existem no cache
-    loadServer();
-    setTimeout(createWindowsAfterSetup, 1000);
-  }
+        try {
+          ensureAuthCacheDir();
+          const cached = loadCachedConfig();
+          fs.writeFileSync(
+            AUTH_CACHE_FILE,
+            JSON.stringify(
+              {
+                ...cached,
+                clientId: String(data.clientId || "").trim(),
+                clientSecret: String(data.clientSecret || "").trim(),
+                credentialsUpdatedAt: new Date().toISOString(),
+              },
+              null,
+              2,
+            ),
+            "utf8",
+          );
+          loadServer();
+          setTimeout(createWindowsAfterSetup, 1000);
+          return { success: true };
+        } catch (err) {
+          console.error("Erro ao salvar cache:", err);
+          return { success: false, message: err.message };
+        }
+      });
+    };
+
+    if (!hasClientCredentials) {
+      createSetupWindow(preloadPath);
+      setupEnvHandler();
+    } else {
+      // Credenciais ja existem no cache
+      loadServer();
+      setTimeout(createWindowsAfterSetup, 1000);
+    }
+  });
 });
 
 app.on("before-quit", () => {
