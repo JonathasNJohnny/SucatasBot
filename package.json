@@ -19,7 +19,7 @@
       "cscKeyPassword": "sucatasbot123"
     },
     "nsis": {
-      "artifactName": "${productName} Setup"
+      "artifactName": "${productName}.${ext}"
     },
     "publish": [
       {
