@@ -23,7 +23,8 @@
         "provider": "github",
         "owner": "JonathasNJohnny",
         "repo": "SucatasBot",
-        "private": false
+        "private": false,
+        "releaseType": "release"
       }
     ]
   },
