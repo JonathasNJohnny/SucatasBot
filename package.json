@@ -1,6 +1,6 @@
 {
   "name": "sucatasbot",
-  "version": "1.0.0",
+  "version": "1.0.1",
   "description": "Controle Gacha e Bot para Twitch",
   "main": "main.js",
   "productName": "SucatasBot",
@@ -17,7 +17,15 @@
       "icon": "icon.png",
       "cscLink": "sucatas-bot-cert.pfx",
       "cscKeyPassword": "sucatasbot123"
-    }
+    },
+    "publish": [
+      {
+        "provider": "github",
+        "owner": "JonathasNJohnny",
+        "repo": "SucatasBot",
+        "private": false
+      }
+    ]
   },
   "scripts": {
     "test": "echo \"Error: no test specified\" && exit 1",
@@ -31,6 +39,7 @@
   "type": "commonjs",
   "dependencies": {
     "dotenv": "^16.6.1",
+    "electron-updater": "^6.8.3",
     "ws": "^8.20.0"
   },
   "devDependencies": {
