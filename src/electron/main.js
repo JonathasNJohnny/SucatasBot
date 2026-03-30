@@ -10,6 +10,8 @@ const {
 } = require("./services/auth-cache.service");
 const { createSetupWindow } = require("./windows/setup-window");
 
+//test update
+
 // importa seu servidor (será recarregado após configurar)
 let serverModule = null;
 let mainWindow = null;
