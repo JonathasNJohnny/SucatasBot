@@ -10,12 +10,11 @@ const {
 } = require("./services/auth-cache.service");
 const { createSetupWindow } = require("./windows/setup-window");
 
-//test update
-
 // importa seu servidor (será recarregado após configurar)
 let serverModule = null;
 let mainWindow = null;
 let tray = null;
+let updateWindow = null;
 let isQuitting = false;
 const hasSingleInstanceLock = app.requestSingleInstanceLock();
 
@@ -71,6 +70,157 @@ function isRemoteVersionGreater(currentVersion, remoteVersion) {
   return remote.patch > current.patch;
 }
 
+function createUpdateWindow() {
+  if (updateWindow && !updateWindow.isDestroyed()) {
+    return updateWindow;
+  }
+
+  updateWindow = new BrowserWindow({
+    width: 460,
+    height: 280,
+    resizable: false,
+    minimizable: false,
+    maximizable: false,
+    fullscreenable: false,
+    autoHideMenuBar: true,
+    show: false,
+    frame: false,
+    alwaysOnTop: true,
+    title: "Atualizando Sucatas Bot",
+    icon: path.join(__dirname, "..", "..", "icon.png"),
+    webPreferences: {
+      devTools: false,
+    },
+  });
+
+  updateWindow.on("closed", () => {
+    updateWindow = null;
+  });
+
+  updateWindow.once("ready-to-show", () => {
+    if (updateWindow && !updateWindow.isDestroyed()) {
+      updateWindow.show();
+      updateWindow.focus();
+    }
+  });
+
+  const html = `
+    <!DOCTYPE html>
+    <html lang="pt-BR">
+      <head>
+        <meta charset="UTF-8" />
+        <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+        <title>Atualizando</title>
+        <style>
+          * { box-sizing: border-box; }
+          body {
+            margin: 0;
+            width: 100vw;
+            height: 100vh;
+            display: grid;
+            place-items: center;
+            font-family: 'Segoe UI', Tahoma, sans-serif;
+            background: radial-gradient(circle at top, #23395d 0%, #121826 55%, #0b1020 100%);
+            color: #f4f7ff;
+          }
+          .card {
+            width: min(90vw, 390px);
+            padding: 28px 24px;
+            border-radius: 14px;
+            background: rgba(255, 255, 255, 0.08);
+            border: 1px solid rgba(255, 255, 255, 0.16);
+            box-shadow: 0 18px 50px rgba(0, 0, 0, 0.35);
+            backdrop-filter: blur(6px);
+            text-align: center;
+          }
+          .spinner {
+            width: 56px;
+            height: 56px;
+            margin: 0 auto 16px;
+            border-radius: 50%;
+            border: 5px solid rgba(255, 255, 255, 0.25);
+            border-top-color: #6cc6ff;
+            animation: spin 1s linear infinite;
+          }
+          h1 {
+            margin: 0 0 8px;
+            font-size: 20px;
+            font-weight: 700;
+          }
+          p {
+            margin: 0;
+            color: #d6def4;
+            font-size: 14px;
+            line-height: 1.4;
+            min-height: 40px;
+          }
+          .progress {
+            margin-top: 14px;
+            font-weight: 600;
+            color: #9ad9ff;
+            font-size: 13px;
+            min-height: 20px;
+          }
+          @keyframes spin {
+            from { transform: rotate(0deg); }
+            to { transform: rotate(360deg); }
+          }
+        </style>
+      </head>
+      <body>
+        <div class="card">
+          <div class="spinner"></div>
+          <h1 id="title">Preparando atualizacao...</h1>
+          <p id="detail">Aguarde enquanto finalizamos tudo para voce.</p>
+          <div class="progress" id="progress"></div>
+        </div>
+        <script>
+          window.__setUpdateState = (state) => {
+            const title = document.getElementById('title');
+            const detail = document.getElementById('detail');
+            const progress = document.getElementById('progress');
+
+            if (state && state.title) {
+              title.textContent = state.title;
+            }
+            if (state && state.detail) {
+              detail.textContent = state.detail;
+            }
+            progress.textContent = state && state.progress ? state.progress : '';
+          };
+        </script>
+      </body>
+    </html>
+  `;
+
+  updateWindow.loadURL(
+    `data:text/html;charset=utf-8,${encodeURIComponent(html)}`,
+  );
+  return updateWindow;
+}
+
+function setUpdateWindowState(state) {
+  if (!updateWindow || updateWindow.isDestroyed()) {
+    return;
+  }
+
+  const payload = JSON.stringify(state || {});
+  updateWindow.webContents
+    .executeJavaScript(`window.__setUpdateState(${payload});`, true)
+    .catch(() => {
+      // Ignora caso a janela esteja fechando durante a atualizacao.
+    });
+}
+
+function closeUpdateWindow() {
+  if (!updateWindow || updateWindow.isDestroyed()) {
+    return;
+  }
+
+  updateWindow.close();
+  updateWindow = null;
+}
+
 async function checkForUpdatesBeforeStart(forceDownload = false) {
   // Atualizacao automatica funciona em app empacotado com release publicado.
   if (!app.isPackaged) {
@@ -99,29 +249,32 @@ async function checkForUpdatesBeforeStart(forceDownload = false) {
       return false;
     }
 
+    const onDownloadProgress = (progressObj) => {
+      const percent = Number(progressObj?.percent || 0).toFixed(1);
+      setUpdateWindowState({
+        title: `Atualizando para ${nextVersion}`,
+        detail: "Baixando atualizacao. Nao feche o app.",
+        progress: `${percent}%`,
+      });
+    };
+
     // Na primeira execução, força o download obrigatoriamente
     if (forceDownload) {
-      await dialog.showMessageBox({
-        type: "info",
-        buttons: ["OK"],
-        defaultId: 0,
-        noLink: true,
-        title: "Baixando versão completa",
-        message: `Preparando a versão ${nextVersion}...`,
-        detail: "Isso pode levar alguns minutos.",
+      createUpdateWindow();
+      setUpdateWindowState({
+        title: `Atualizando para ${nextVersion}`,
+        detail: "Preparando download da versao completa...",
       });
 
+      autoUpdater.on("download-progress", onDownloadProgress);
       await autoUpdater.downloadUpdate();
+      autoUpdater.removeListener("download-progress", onDownloadProgress);
       markFirstRunDone();
 
-      await dialog.showMessageBox({
-        type: "info",
-        buttons: ["OK"],
-        defaultId: 0,
-        noLink: true,
-        title: "Setup concluído",
-        message: "Versão pronta para usar.",
-        detail: "O app será reiniciado agora.",
+      setUpdateWindowState({
+        title: "Atualizacao pronta",
+        detail: "Reiniciando o app para concluir a instalacao...",
+        progress: "100%",
       });
 
       isQuitting = true;
@@ -145,16 +298,20 @@ async function checkForUpdatesBeforeStart(forceDownload = false) {
       return false;
     }
 
-    await autoUpdater.downloadUpdate();
+    createUpdateWindow();
+    setUpdateWindowState({
+      title: `Atualizando para ${nextVersion}`,
+      detail: "Baixando atualizacao. Nao feche o app.",
+    });
 
-    await dialog.showMessageBox({
-      type: "info",
-      buttons: ["OK"],
-      defaultId: 0,
-      noLink: true,
+    autoUpdater.on("download-progress", onDownloadProgress);
+    await autoUpdater.downloadUpdate();
+    autoUpdater.removeListener("download-progress", onDownloadProgress);
+
+    setUpdateWindowState({
       title: "Atualizacao pronta",
-      message: "Atualizacao baixada com sucesso.",
-      detail: "O app sera reiniciado para concluir a instalacao.",
+      detail: "Reiniciando o app para concluir a instalacao...",
+      progress: "100%",
     });
 
     isQuitting = true;
@@ -162,6 +319,19 @@ async function checkForUpdatesBeforeStart(forceDownload = false) {
     return true;
   } catch (error) {
     console.error("Falha ao verificar/baixar atualizacao:", error);
+    autoUpdater.removeAllListeners("download-progress");
+
+    setUpdateWindowState({
+      title: "Falha na atualizacao",
+      detail:
+        "Nao foi possivel atualizar agora. Vamos abrir o app normalmente.",
+      progress: "",
+    });
+
+    setTimeout(() => {
+      closeUpdateWindow();
+    }, 1800);
+
     return false;
   }
 }
