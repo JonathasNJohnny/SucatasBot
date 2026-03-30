@@ -33,16 +33,24 @@ const AUTH_CACHE_FILE = path.join(AUTH_CACHE_DIR, "twitch-auth.json");
 const RUNTIME_DATA_DIR = path.join(AUTH_CACHE_DIR, "runtime");
 const RUNTIME_IMGS_DIR = path.join(RUNTIME_DATA_DIR, "imgs");
 const CARD_STYLE_FILE = path.join(RUNTIME_DATA_DIR, "card-style.json");
-const REDEMPTIONS_LOG_FILE = path.join(RUNTIME_DATA_DIR, "resgates.txt");
-const IMPORTED_ITEMS_FILE = path.join(RUNTIME_DATA_DIR, "importedItems.txt");
+const REDEMPTIONS_LOG_FILE = path.join(RUNTIME_DATA_DIR, "redems.txt");
+const LEGACY_REDEMPTIONS_LOG_FILE = path.join(RUNTIME_DATA_DIR, "resgates.txt");
+const IMPORTED_ITEMS_FILE = path.join(RUNTIME_DATA_DIR, "importedItems.json");
+const LEGACY_IMPORTED_ITEMS_FILE = path.join(
+  RUNTIME_DATA_DIR,
+  "importedItems.txt",
+);
+const CREATED_REWARDS_FILE = path.join(RUNTIME_DATA_DIR, "createdRewards.json");
 const ITEMS_UPLOAD_DIR = path.join(RUNTIME_IMGS_DIR, "items");
 const LEGACY_PLUSHIES_UPLOAD_DIR = path.join(RUNTIME_IMGS_DIR, "plushies");
 const BUNDLED_IMGS_DIR = path.join(PROJECT_ROOT_DIR, "imgs");
+const GACHAPON_REWARD_TYPE = "gachapon";
 const PUBLIC_FILES = new Set([
   "importItems.html",
   "cardCustomization.html",
+  "controlPanel.html",
   "overlay.html",
-  "twitchControl.html",
+  "cardReward.html",
   "twitchCallback.html",
 ]);
 
@@ -73,6 +81,9 @@ const DEFAULT_CARD_STYLE_CONFIG = {
   packLabel: "SUCATAS PACK",
   packImageData: "",
   cardImageData: "",
+  packSwingCount: 2,
+  packRevealDelayMs: 1800,
+  cardVisibleMs: 4000,
 };
 
 function ensureAuthCacheDir() {
@@ -152,6 +163,27 @@ function clearCachedAuth() {
   if (fs.existsSync(AUTH_CACHE_FILE)) {
     fs.unlinkSync(AUTH_CACHE_FILE);
   }
+}
+
+function clearCachedTwitchSession() {
+  ensureAuthCacheDir();
+  const cached = loadCachedRawConfig() || {};
+
+  const next = {
+    ...cached,
+    broadcasterId: "",
+    login: "",
+    displayName: "",
+    profileImageUrl: "",
+    accessToken: "",
+    refreshToken: "",
+    connectedAt: "",
+    expiresIn: 0,
+    scope: [],
+    tokenType: "",
+  };
+
+  fs.writeFileSync(AUTH_CACHE_FILE, JSON.stringify(next, null, 2), "utf8");
 }
 
 function saveRewardConfig(rewardConfig) {
@@ -241,6 +273,15 @@ function sanitizeImageData(value) {
   return normalized.length <= 8_000_000 ? normalized : "";
 }
 
+function sanitizeInteger(value, fallback, min, max) {
+  const parsed = Number.parseInt(String(value ?? ""), 10);
+  if (!Number.isFinite(parsed)) {
+    return fallback;
+  }
+
+  return Math.min(Math.max(parsed, min), max);
+}
+
 function normalizeCardStyleConfig(raw) {
   const parsed = raw && typeof raw === "object" ? raw : {};
 
@@ -282,6 +323,24 @@ function normalizeCardStyleConfig(raw) {
     ).slice(0, 80),
     packImageData: sanitizeImageData(parsed.packImageData),
     cardImageData: sanitizeImageData(parsed.cardImageData),
+    packSwingCount: sanitizeInteger(
+      parsed.packSwingCount,
+      DEFAULT_CARD_STYLE_CONFIG.packSwingCount,
+      1,
+      12,
+    ),
+    packRevealDelayMs: sanitizeInteger(
+      parsed.packRevealDelayMs,
+      DEFAULT_CARD_STYLE_CONFIG.packRevealDelayMs,
+      200,
+      15000,
+    ),
+    cardVisibleMs: sanitizeInteger(
+      parsed.cardVisibleMs,
+      DEFAULT_CARD_STYLE_CONFIG.cardVisibleMs,
+      400,
+      30000,
+    ),
   };
 }
 
@@ -319,6 +378,60 @@ function createDrawId(prefix = "draw") {
   return `${prefix}_${Date.now()}_${Math.random().toString(36).slice(2, 8)}`;
 }
 
+function migrateRuntimeDataFiles() {
+  ensureRuntimeDirs();
+
+  if (
+    !fs.existsSync(REDEMPTIONS_LOG_FILE) &&
+    fs.existsSync(LEGACY_REDEMPTIONS_LOG_FILE)
+  ) {
+    try {
+      fs.renameSync(LEGACY_REDEMPTIONS_LOG_FILE, REDEMPTIONS_LOG_FILE);
+    } catch {
+      const legacyLog = fs.readFileSync(LEGACY_REDEMPTIONS_LOG_FILE, "utf8");
+      fs.writeFileSync(REDEMPTIONS_LOG_FILE, legacyLog, "utf8");
+    }
+  }
+
+  if (fs.existsSync(LEGACY_IMPORTED_ITEMS_FILE)) {
+    try {
+      const legacyRaw = fs.readFileSync(LEGACY_IMPORTED_ITEMS_FILE, "utf8");
+      const legacyParsed = JSON.parse(legacyRaw);
+      const legacyNormalized = normalizeImportedItems(legacyParsed);
+
+      // So migra quando o legado realmente contem itens validos.
+      if (!legacyNormalized.length) {
+        return;
+      }
+
+      let currentNormalized = [];
+      if (fs.existsSync(IMPORTED_ITEMS_FILE)) {
+        try {
+          const currentRaw = fs.readFileSync(IMPORTED_ITEMS_FILE, "utf8");
+          const currentParsed = JSON.parse(currentRaw);
+          currentNormalized = normalizeImportedItems(currentParsed);
+        } catch {
+          currentNormalized = [];
+        }
+      }
+
+      if (!currentNormalized.length) {
+        fs.writeFileSync(
+          IMPORTED_ITEMS_FILE,
+          `${JSON.stringify(legacyNormalized, null, 2)}\n`,
+          "utf8",
+        );
+      }
+
+      fs.unlinkSync(LEGACY_IMPORTED_ITEMS_FILE);
+    } catch (err) {
+      console.error(
+        `[ITEMS] erro ao migrar importedItems.txt para importedItems.json: ${err instanceof Error ? err.message : String(err)}`,
+      );
+    }
+  }
+}
+
 function normalizeSingleItem(rawItem, fallback = {}) {
   return {
     id: String(rawItem?.id || fallback.id || createItemId()).trim(),
@@ -334,7 +447,7 @@ function isValidItem(item) {
 
 function loadImportedItemsFromFile() {
   try {
-    ensureRuntimeDirs();
+    migrateRuntimeDataFiles();
 
     if (!fs.existsSync(IMPORTED_ITEMS_FILE)) {
       fs.writeFileSync(IMPORTED_ITEMS_FILE, "[]\n", "utf8");
@@ -358,7 +471,7 @@ function loadImportedItemsFromFile() {
     return normalized;
   } catch (err) {
     console.error(
-      `[ITEMS] erro ao carregar importedItems.txt: ${err instanceof Error ? err.message : String(err)}`,
+      `[ITEMS] erro ao carregar importedItems.json: ${err instanceof Error ? err.message : String(err)}`,
     );
     return [];
   }
@@ -375,6 +488,7 @@ function saveImportedItemsToFile(items) {
 let importedItems = loadImportedItemsFromFile();
 
 ensureRuntimeDirs();
+migrateRuntimeDataFiles();
 
 function normalizeImportedItems(rawItems) {
   if (!Array.isArray(rawItems)) return [];
@@ -492,6 +606,55 @@ function appendRedemptionLogLine(userName, plushieName) {
   });
 }
 
+function parseRedemptionLogLine(line) {
+  const trimmed = String(line || "").trim();
+  if (!trimmed) return null;
+
+  const parts = trimmed.split("|").map((part) => part.trim());
+  if (parts.length < 3) return null;
+
+  const [rawTimestamp, userName, itemName] = parts;
+  const dateObj = new Date(rawTimestamp);
+
+  let datePart = String(rawTimestamp || "").slice(0, 10);
+  let timePart = String(rawTimestamp || "").slice(11, 19);
+
+  if (!Number.isNaN(dateObj.getTime())) {
+    datePart = dateObj.toISOString().slice(0, 10);
+    timePart = dateObj.toISOString().slice(11, 19);
+  }
+
+  return {
+    timestamp: rawTimestamp,
+    date: datePart,
+    time: timePart,
+    user: userName,
+    item: itemName,
+    display: `${datePart} ${timePart} ${userName} - ${itemName}`,
+  };
+}
+
+function loadRedemptionsLogEntries() {
+  try {
+    migrateRuntimeDataFiles();
+    if (!fs.existsSync(REDEMPTIONS_LOG_FILE)) {
+      return [];
+    }
+
+    const raw = fs.readFileSync(REDEMPTIONS_LOG_FILE, "utf8");
+    return raw
+      .split(/\r?\n/)
+      .map(parseRedemptionLogLine)
+      .filter(Boolean)
+      .reverse();
+  } catch (err) {
+    console.error(
+      `[TWITCH] erro ao ler redems.txt: ${err instanceof Error ? err.message : String(err)}`,
+    );
+    return [];
+  }
+}
+
 function sendJson(res, statusCode, data) {
   res.writeHead(statusCode, {
     "Content-Type": "application/json; charset=utf-8",
@@ -541,6 +704,9 @@ function getSafeTwitchStatus() {
         broadcasterId: cached.broadcasterId,
         login: cached.login,
         displayName: cached.displayName,
+        profileImageUrl: String(
+          cached.profileImageUrl || cached.profile_image_url || "",
+        ).trim(),
         connectedAt: cached.connectedAt,
       }
     : null;
@@ -687,6 +853,7 @@ async function handleTwitchOAuthCallback(req, res) {
       broadcasterId: user.id,
       login: user.login,
       displayName: user.display_name,
+      profileImageUrl: user.profile_image_url,
       accessToken: tokenData.access_token,
       refreshToken: tokenData.refresh_token,
       connectedAt: new Date().toISOString(),
@@ -729,12 +896,7 @@ async function twitchApiRequest(url, config, options = {}) {
   return res.json();
 }
 
-async function sendRedemptionMessageToChat(config, userName, itemName) {
-  const safeUser = String(userName || "viewer").trim() || "viewer";
-  const safeItem =
-    String(itemName || "item surpresa").trim() || "item surpresa";
-  const message = `@${safeUser} resgatou e tirou: ${safeItem}!`;
-
+async function sendChatMessage(config, message) {
   const senderId = String(
     config.chatSenderId || config.broadcasterId || "",
   ).trim();
@@ -756,7 +918,7 @@ async function sendRedemptionMessageToChat(config, userName, itemName) {
     body: JSON.stringify({
       broadcaster_id: config.broadcasterId,
       sender_id: senderId,
-      message,
+      message: String(message || "").trim(),
     }),
   });
 
@@ -773,6 +935,15 @@ async function sendRedemptionMessageToChat(config, userName, itemName) {
       response.data[0].drop_reason?.message || "mensagem nao enviada";
     throw new Error(`Falha ao enviar mensagem no chat: ${dropReason}`);
   }
+}
+
+async function sendRedemptionMessageToChat(config, userName, itemName) {
+  const safeUser = String(userName || "viewer").trim() || "viewer";
+  const safeItem =
+    String(itemName || "item surpresa").trim() || "item surpresa";
+  const message = `@${safeUser} resgatou e tirou: ${safeItem}!`;
+
+  await sendChatMessage(config, message);
 }
 
 async function ensureRewardExists(config) {
@@ -981,6 +1152,124 @@ function logRewardsList(rewards, targetName) {
   console.log(
     `[TWITCH] rewards (${rewards.length}) alvo="${targetName}": ${JSON.stringify(titleList)}`,
   );
+}
+
+function saveCreatedRewardsRegistry(config, rewards, deletedRewards = []) {
+  ensureRuntimeDirs();
+
+  const normalizedRewards = rewards.map((reward) => ({
+    id: String(reward.id || "").trim(),
+    title: String(reward.title || "").trim(),
+    type: GACHAPON_REWARD_TYPE,
+    managedBy: "system",
+    broadcasterId: String(config?.broadcasterId || "").trim(),
+    cost: Number.parseInt(String(reward.cost ?? 0), 10) || 0,
+    color: parseRewardColor(reward.background_color, DEFAULT_REWARD_COLOR),
+    isEnabled: Boolean(reward.is_enabled),
+    prompt: String(reward.prompt || ""),
+    updatedAt: new Date().toISOString(),
+  }));
+
+  const payload = {
+    kind: "createdRewards",
+    updatedAt: new Date().toISOString(),
+    rewards: normalizedRewards,
+    deletedRewards: deletedRewards.map((reward) => ({
+      id: String(reward.id || "").trim(),
+      title: String(reward.title || "").trim(),
+      deletedAt: new Date().toISOString(),
+    })),
+  };
+
+  fs.writeFileSync(
+    CREATED_REWARDS_FILE,
+    `${JSON.stringify(payload, null, 2)}\n`,
+    "utf8",
+  );
+}
+
+function buildTwitchConfigFromCache() {
+  const cached = loadCachedAuth();
+  const credentials = getClientCredentials();
+  const rewardConfig = loadRewardConfigFromCache();
+
+  return {
+    clientId: String(credentials.clientId || "").trim(),
+    broadcasterId: String(cached?.broadcasterId || "").trim(),
+    accessToken: String(cached?.accessToken || "").trim(),
+    chatSenderId: String(
+      TWITCH_BOT_USER_ID || cached?.broadcasterId || "",
+    ).trim(),
+    chatAccessToken: String(
+      TWITCH_BOT_ACCESS_TOKEN || cached?.accessToken || "",
+    ).trim(),
+    rewardName: String(
+      rewardConfig?.rewardName || DEFAULT_REDEMPTION_NAME,
+    ).trim(),
+    rewardCost: parseRewardCost(rewardConfig?.rewardCost, DEFAULT_REWARD_COST),
+    rewardColor: parseRewardColor(
+      rewardConfig?.rewardColor,
+      DEFAULT_REWARD_COLOR,
+    ),
+    rewardEnabled: parseRewardEnabled(
+      rewardConfig?.rewardEnabled,
+      DEFAULT_REWARD_ENABLED,
+    ),
+    pollIntervalMs: TWITCH_POLL_INTERVAL_MS,
+  };
+}
+
+async function syncCreatedRewardsForConfig(config) {
+  if (!config?.clientId || !config?.broadcasterId || !config?.accessToken) {
+    return;
+  }
+
+  const trackedReward = await ensureRewardExists(config);
+  const rewardsUrl = new URL(
+    "https://api.twitch.tv/helix/channel_points/custom_rewards",
+  );
+  rewardsUrl.searchParams.set("broadcaster_id", config.broadcasterId);
+
+  const rewardsData = await twitchApiRequest(rewardsUrl.toString(), config);
+  const rewards = Array.isArray(rewardsData.data) ? rewardsData.data : [];
+  const deletedRewards = [];
+
+  for (const reward of rewards) {
+    if (!reward?.id || reward.id === trackedReward.id) {
+      continue;
+    }
+
+    try {
+      await deleteRewardById(config, reward.id);
+      deletedRewards.push(reward);
+      console.log(
+        `[TWITCH] reward removido por gerenciamento createdRewards: id=${reward.id} title="${reward.title}"`,
+      );
+    } catch (err) {
+      console.error(
+        `[TWITCH] falha ao remover reward extra id=${reward.id}: ${err instanceof Error ? err.message : String(err)}`,
+      );
+    }
+  }
+
+  saveCreatedRewardsRegistry(config, [trackedReward], deletedRewards);
+}
+
+function syncCreatedRewardsAtStartup() {
+  const startupConfig = buildTwitchConfigFromCache();
+  if (
+    !startupConfig.clientId ||
+    !startupConfig.broadcasterId ||
+    !startupConfig.accessToken
+  ) {
+    return;
+  }
+
+  syncCreatedRewardsForConfig(startupConfig).catch((err) => {
+    console.error(
+      `[TWITCH] falha ao sincronizar createdRewards no startup: ${err instanceof Error ? err.message : String(err)}`,
+    );
+  });
 }
 
 function logRedemptionsList(redemptions, rewardTitle) {
@@ -1357,6 +1646,16 @@ async function handleApiRoutes(req, res, cleanPath) {
     return true;
   }
 
+  if (cleanPath === "/api/twitch/redemptions-log" && req.method === "GET") {
+    const entries = loadRedemptionsLogEntries();
+    sendJson(res, 200, {
+      ok: true,
+      count: entries.length,
+      entries,
+    });
+    return true;
+  }
+
   if (cleanPath === "/api/twitch/connect" && req.method === "GET") {
     const credentials = getClientCredentials();
     if (!credentials.clientId || !credentials.clientSecret) {
@@ -1375,7 +1674,7 @@ async function handleApiRoutes(req, res, cleanPath) {
 
   if (cleanPath === "/api/twitch/logout" && req.method === "POST") {
     resetTwitchSessionState();
-    clearCachedAuth();
+    clearCachedTwitchSession();
     sendJson(res, 200, { ok: true, status: getSafeTwitchStatus() });
     return true;
   }
@@ -1437,6 +1736,7 @@ async function handleApiRoutes(req, res, cleanPath) {
       }
 
       startTwitchMonitor(config);
+      await syncCreatedRewardsForConfig(config);
       sendJson(res, 200, { ok: true, status: getSafeTwitchStatus() });
       return true;
     } catch (err) {
@@ -1526,6 +1826,7 @@ async function handleApiRoutes(req, res, cleanPath) {
       );
       twitchState.config = config;
       saveRewardConfig(config);
+      await syncCreatedRewardsForConfig(config);
       twitchState.seenRedemptions.clear();
       twitchState.monitorStartedAt = new Date();
 
@@ -1580,6 +1881,7 @@ async function handleApiRoutes(req, res, cleanPath) {
       await updateRewardEnabled(config, enabled);
       twitchState.config = config;
       saveRewardConfig(config);
+      await syncCreatedRewardsForConfig(config);
 
       sendJson(res, 200, {
         ok: true,
@@ -1619,6 +1921,44 @@ async function handleApiRoutes(req, res, cleanPath) {
     return true;
   }
 
+  if (cleanPath === "/api/twitch/test-chat" && req.method === "POST") {
+    try {
+      const cached = loadCachedAuth();
+      const credentials = getClientCredentials();
+      const config = twitchState.config || {
+        clientId: credentials.clientId,
+        broadcasterId: String(cached?.broadcasterId || "").trim(),
+        accessToken: String(cached?.accessToken || "").trim(),
+        chatSenderId: String(
+          TWITCH_BOT_USER_ID || cached?.broadcasterId || "",
+        ).trim(),
+        chatAccessToken: String(
+          TWITCH_BOT_ACCESS_TOKEN || cached?.accessToken || "",
+        ).trim(),
+      };
+
+      if (!config.clientId || !config.broadcasterId || !config.accessToken) {
+        sendJson(res, 400, {
+          ok: false,
+          message: "Conecte com a Twitch antes de verificar conexao",
+        });
+        return true;
+      }
+
+      await sendChatMessage(config, "Conectado e Funcionando!");
+      sendJson(res, 200, { ok: true, message: "Mensagem enviada no chat" });
+    } catch (err) {
+      sendJson(res, 500, {
+        ok: false,
+        message:
+          err instanceof Error
+            ? err.message
+            : "Erro ao enviar mensagem no chat",
+      });
+    }
+    return true;
+  }
+
   return false;
 }
 
@@ -1636,7 +1976,7 @@ function getContentType(filePath) {
 }
 
 const server = http.createServer((req, res) => {
-  const urlPath = req.url === "/" ? "/twitchControl.html" : req.url;
+  const urlPath = req.url;
   const cleanPath = decodeURIComponent(urlPath.split("?")[0]);
 
   if (
@@ -1831,8 +2171,9 @@ wss.on("connection", (ws) => {
 server.listen(PORT, () => {
   console.log(`HTTP + WebSocket rodando em http://localhost:${PORT}`);
 
+  syncCreatedRewardsAtStartup();
+
   if (process.argv.includes("--open")) {
-    exec(`start "" "http://localhost:${PORT}/twitchControl.html"`);
     exec(`start "" "http://localhost:${PORT}/overlay.html"`);
   }
 });

@@ -3,7 +3,7 @@
   <head>
     <meta charset="UTF-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
-    <title>Twitch Control</title>
+    <title>Recompensa das Cartas</title>
     <link rel="stylesheet" href="/styles/general.css" />
     <link rel="stylesheet" href="/styles/twitchControl.css" />
     <script src="/components/navbar/navbar-loader.js" defer></script>
@@ -12,26 +12,10 @@
     <div id="navbarMount"></div>
     <main class="wrap">
       <section class="panel">
-        <h1>Twitch Control</h1>
-        <p>Link para OBS: http://127.0.0.1:49382/overlay.html</p>
+        <h1>Recompensa das Cartas</h1>
+        <p>Configure o resgate usado para abrir cartas.</p>
 
         <div class="grid">
-          <div>
-            <label for="broadcasterId">Broadcaster ID</label>
-            <input
-              id="broadcasterId"
-              placeholder="Conecte com a Twitch para preencher"
-              readonly
-            />
-          </div>
-          <div>
-            <label for="channelName">Canal</label>
-            <input
-              id="channelName"
-              placeholder="Conecte com a Twitch"
-              readonly
-            />
-          </div>
           <div>
             <label for="rewardName">Nome do resgate</label>
             <input id="rewardName" value="-" />
@@ -62,33 +46,23 @@
               <span class="switch-state" id="rewardEnabledText">ON</span>
             </div>
           </div>
-          <div>
-            <label for="pollIntervalMs">Intervalo de consulta</label>
-            <input id="pollIntervalMs" value="1000 ms" readonly />
-          </div>
         </div>
 
         <div class="actions">
-          <button class="btn-test" id="btnConnect">Conectar Twitch</button>
-          <button class="btn-start" id="btnStartStop">Iniciar monitor</button>
-          <button class="btn-test" id="btnTest">Teste de gatilho</button>
-          <button class="btn-stop" id="btnClearApiCache">
-            Limpar cache da API
-          </button>
-          <button class="btn-stop" id="btnLogout">Sair</button>
+          <button class="btn-test" id="btnTestOverlay">Testar overlay</button>
+          <button class="btn-test" id="btnTestTrigger">Teste de gatilho</button>
         </div>
 
-        <div class="status" id="statusBox">
-          <div id="statusLine" class="warn">Carregando status...</div>
-          <pre id="statusRaw"></pre>
-        </div>
+        <section class="redemptions-section" aria-label="Historico de resgates">
+          <h2>Resgates Realizados</h2>
+          <ul id="redemptionsList" class="redemptions-list">
+            <li class="redemptions-empty">Carregando resgates...</li>
+          </ul>
+        </section>
       </section>
     </main>
 
     <script>
-      const statusLine = document.getElementById("statusLine");
-      const statusRaw = document.getElementById("statusRaw");
-      const btnStartStop = document.getElementById("btnStartStop");
       const rewardNameInput = document.getElementById("rewardName");
       const rewardCostInput = document.getElementById("rewardCost");
       const rewardColorInput = document.getElementById("rewardColor");
@@ -96,6 +70,7 @@
       const rewardEnabledText = document.getElementById("rewardEnabledText");
       const rewardProgressFill = document.getElementById("rewardProgressFill");
       const rewardProgressText = document.getElementById("rewardProgressText");
+      const redemptionsList = document.getElementById("redemptionsList");
 
       const REWARD_APPLY_DELAY_MS = 10000;
       let rewardApplyTimeoutId = null;
@@ -104,14 +79,8 @@
       let rewardEditInProgress = false;
       let rewardToggleInProgress = false;
 
-      function setStatus(text, cls) {
-        statusLine.className = cls;
-        statusLine.textContent = text;
-      }
-
       function getPayload() {
         return {
-          broadcasterId: document.getElementById("broadcasterId").value.trim(),
           rewardName: rewardNameInput.value.trim(),
           rewardCost: rewardCostInput.value,
           rewardColor: rewardColorInput.value,
@@ -127,16 +96,6 @@
       function fillFormFromStatus(status) {
         if (!status) return;
 
-        if (status.auth && status.auth.broadcasterId) {
-          document.getElementById("broadcasterId").value =
-            status.auth.broadcasterId;
-          document.getElementById("channelName").value =
-            status.auth.displayName || status.auth.login || "";
-        } else {
-          document.getElementById("broadcasterId").value = "";
-          document.getElementById("channelName").value = "";
-        }
-
         if (!rewardEditInProgress) {
           rewardNameInput.value = status.redemptionName || "-";
           rewardCostInput.value = String(status.rewardCost || 1);
@@ -145,8 +104,6 @@
             setRewardEnabledUi(Boolean(status.rewardEnabled));
           }
         }
-        document.getElementById("pollIntervalMs").value =
-          `${status.pollIntervalMs || 1000} ms`;
       }
 
       function clearRewardTimers() {
@@ -188,7 +145,6 @@
             rewardColor,
             rewardEnabled,
           });
-          setStatus("Resgate atualizado: nome, pontos e cor aplicados", "ok");
           rewardEditInProgress = false;
           renderRewardProgress(
             0,
@@ -198,7 +154,6 @@
         } catch (err) {
           rewardEditInProgress = false;
           renderRewardProgress(0, `Falha ao atualizar: ${err.message}`);
-          setStatus(`Erro ao atualizar resgate: ${err.message}`, "danger");
         }
       }
 
@@ -228,49 +183,47 @@
         }, REWARD_APPLY_DELAY_MS);
       }
 
-      function updateStartStopButton(status) {
-        const isRunning = Boolean(status?.running);
-
-        btnStartStop.textContent = isRunning
-          ? "Parar monitor"
-          : "Iniciar monitor";
-        btnStartStop.className = isRunning ? "btn-stop" : "btn-start";
-        btnStartStop.dataset.action = isRunning ? "stop" : "start";
-      }
-
       async function refreshStatus() {
         const res = await fetch("/api/twitch/status");
         const data = await res.json();
 
         fillFormFromStatus(data);
-        updateStartStopButton(data);
+        await refreshRedemptionsList();
+      }
 
-        if (!data.envConfigured) {
-          setStatus(
-            "Configure TWITCH_CLIENT_ID e TWITCH_CLIENT_SECRET no cache inicial",
-            "danger",
-          );
-          statusRaw.textContent = JSON.stringify(data, null, 2);
+      function renderRedemptionsList(entries) {
+        if (!Array.isArray(entries) || entries.length === 0) {
+          redemptionsList.innerHTML =
+            '<li class="redemptions-empty">Nenhum resgate registrado ainda.</li>';
           return;
         }
 
-        if (!data.auth) {
-          setStatus("Nao conectado. Clique em Conectar Twitch", "warn");
-          statusRaw.textContent = JSON.stringify(data, null, 2);
-          return;
-        }
+        redemptionsList.innerHTML = entries
+          .map((entry) => {
+            const date = String(entry?.date || "").trim();
+            const time = String(entry?.time || "").trim();
+            const user = String(entry?.user || "desconhecido").trim();
+            const item = String(entry?.item || "desconhecido").trim();
+            return `<li>${date} ${time} ${user} - ${item}</li>`;
+          })
+          .join("");
+      }
 
-        if (data.running) {
-          setStatus("Monitor ativo", "ok");
-        } else {
-          setStatus("Monitor parado", "warn");
-        }
+      async function refreshRedemptionsList() {
+        try {
+          const res = await fetch("/api/twitch/redemptions-log", {
+            cache: "no-store",
+          });
+          const data = await res.json();
+          if (!res.ok || data.ok === false) {
+            throw new Error(data.message || "Erro ao carregar resgates");
+          }
 
-        if (data.lastError) {
-          setStatus(`Erro: ${data.lastError}`, "danger");
+          renderRedemptionsList(data.entries || []);
+        } catch {
+          redemptionsList.innerHTML =
+            '<li class="redemptions-empty">Nao foi possivel carregar os resgates.</li>';
         }
-
-        statusRaw.textContent = JSON.stringify(data, null, 2);
       }
 
       async function postJson(url, payload) {
@@ -288,65 +241,21 @@
         return data;
       }
 
-      btnStartStop.addEventListener("click", async () => {
-        const action = btnStartStop.dataset.action || "start";
-
-        try {
-          if (action === "stop") {
-            await postJson("/api/twitch/stop");
-          } else {
-            await postJson("/api/twitch/start", getPayload());
-          }
-          await refreshStatus();
-        } catch (err) {
-          const label = action === "stop" ? "parar" : "iniciar";
-          setStatus(`Erro ao ${label}: ${err.message}`, "danger");
-        }
-      });
-
-      document.getElementById("btnConnect").addEventListener("click", () => {
-        window.location.href = "/api/twitch/connect";
-      });
-
-      document.getElementById("btnTest").addEventListener("click", async () => {
-        try {
-          await postJson("/api/twitch/test-trigger");
-          setStatus("Gatilho de teste disparado no overlay", "ok");
-          await refreshStatus();
-        } catch (err) {
-          setStatus(`Erro no teste: ${err.message}`, "danger");
-        }
-      });
-
       document
-        .getElementById("btnClearApiCache")
-        .addEventListener("click", async () => {
-          const confirmed = confirm(
-            "Isso vai apagar o cache da API/Twitch (incluindo credenciais locais salvas). Deseja continuar?",
-          );
-
-          if (!confirmed) return;
-
-          try {
-            await postJson("/api/twitch/reset-cache");
-            setStatus(
-              "Cache limpo com sucesso. Reinicie o app para abrir a tela de setup.",
-              "warn",
-            );
-            await refreshStatus();
-          } catch (err) {
-            setStatus(`Erro ao limpar cache: ${err.message}`, "danger");
-          }
+        .getElementById("btnTestOverlay")
+        .addEventListener("click", () => {
+          window.open("/overlay.html", "_blank");
         });
 
       document
-        .getElementById("btnLogout")
+        .getElementById("btnTestTrigger")
         .addEventListener("click", async () => {
           try {
-            await postJson("/api/twitch/logout");
+            await postJson("/api/twitch/test-trigger");
+            renderRewardProgress(0, "Gatilho de teste disparado no overlay");
             await refreshStatus();
           } catch (err) {
-            setStatus(`Erro no logout: ${err.message}`, "danger");
+            renderRewardProgress(0, `Erro no teste: ${err.message}`);
           }
         });
 
@@ -369,16 +278,12 @@
           await postJson("/api/twitch/reward-enabled", {
             enabled: nextEnabled,
           });
-          setStatus(
-            nextEnabled ? "Resgate ativado" : "Resgate desativado",
-            "ok",
-          );
           await refreshStatus();
         } catch (err) {
           setRewardEnabledUi(!nextEnabled);
-          setStatus(
+          renderRewardProgress(
+            0,
             `Erro ao alterar status do resgate: ${err.message}`,
-            "danger",
           );
         } finally {
           rewardToggleInProgress = false;

@@ -1,0 +1,165 @@
+<!doctype html>
+<html lang="pt-BR">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>Painel de Controle</title>
+    <link rel="stylesheet" href="/styles/general.css" />
+    <link rel="stylesheet" href="/styles/controlPanel.css" />
+    <script src="/components/navbar/navbar-loader.js" defer></script>
+  </head>
+  <body>
+    <div id="navbarMount"></div>
+    <main class="wrap">
+      <section class="panel">
+        <div class="panel-head">
+          <h1>Painel de Controle</h1>
+          <button
+            class="btn-monitor"
+            id="btnStartStop"
+            type="button"
+            aria-label="Iniciar monitor"
+            title="Iniciar monitor"
+          >
+            ▶
+          </button>
+        </div>
+        <p>Seja bem vindo(a): <span id="userName">Usuário</span></p>
+
+        <div class="actions">
+          <button class="btn-test" id="btnTest">Verificar Conexão</button>
+          <button class="btn-stop" id="btnLogout">Sair</button>
+        </div>
+
+        <div class="status" id="statusBox">
+          <div id="statusLine" class="warn">Carregando status...</div>
+          <pre id="statusRaw"></pre>
+        </div>
+      </section>
+    </main>
+
+    <script>
+      const statusLine = document.getElementById("statusLine");
+      const statusRaw = document.getElementById("statusRaw");
+      const userName = document.getElementById("userName");
+      const btnStartStop = document.getElementById("btnStartStop");
+
+      function setStatus(text, cls) {
+        statusLine.className = cls;
+        statusLine.textContent = text;
+      }
+
+      function getPayload() {
+        return {};
+      }
+
+      function updateStartStopButton(status) {
+        const isRunning = Boolean(status?.running);
+
+        btnStartStop.textContent = isRunning ? "⏹" : "▶";
+        btnStartStop.className = isRunning ? "btn-monitor stop" : "btn-monitor";
+        btnStartStop.dataset.action = isRunning ? "stop" : "start";
+        btnStartStop.title = isRunning ? "Parar monitor" : "Iniciar monitor";
+        btnStartStop.setAttribute(
+          "aria-label",
+          isRunning ? "Parar monitor" : "Iniciar monitor",
+        );
+      }
+
+      async function refreshStatus() {
+        const res = await fetch("/api/twitch/status");
+        const data = await res.json();
+        userName.textContent =
+          data?.auth?.displayName || data?.auth?.login || "Usuário";
+
+        updateStartStopButton(data);
+
+        if (!data.envConfigured) {
+          setStatus(
+            "Configure TWITCH_CLIENT_ID e TWITCH_CLIENT_SECRET no cache inicial",
+            "danger",
+          );
+          statusRaw.textContent = JSON.stringify(data, null, 2);
+          return;
+        }
+
+        if (!data.auth) {
+          setStatus("Nao conectado. Clique em Conectar Twitch", "warn");
+          statusRaw.textContent = JSON.stringify(data, null, 2);
+          return;
+        }
+
+        if (data.running) {
+          setStatus("Monitor ativo", "ok");
+        } else {
+          setStatus("Monitor parado", "warn");
+        }
+
+        if (data.lastError) {
+          setStatus(`Erro: ${data.lastError}`, "danger");
+        }
+
+        statusRaw.textContent = JSON.stringify(data, null, 2);
+      }
+
+      async function postJson(url, payload) {
+        const res = await fetch(url, {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify(payload || {}),
+        });
+
+        const data = await res.json();
+        if (!res.ok || data.ok === false) {
+          throw new Error(data.message || "Falha na requisicao");
+        }
+
+        return data;
+      }
+
+      btnStartStop.addEventListener("click", async () => {
+        const action = btnStartStop.dataset.action || "start";
+
+        try {
+          if (action === "stop") {
+            await postJson("/api/twitch/stop");
+          } else {
+            await postJson("/api/twitch/start", getPayload());
+          }
+          await refreshStatus();
+        } catch (err) {
+          const label = action === "stop" ? "parar" : "iniciar";
+          setStatus(`Erro ao ${label}: ${err.message}`, "danger");
+        }
+      });
+
+      document.getElementById("btnTest").addEventListener("click", async () => {
+        try {
+          await postJson("/api/twitch/test-chat");
+          setStatus("Mensagem enviada no chat: Conectado e Funcionando!", "ok");
+          await refreshStatus();
+        } catch (err) {
+          setStatus(`Erro no teste: ${err.message}`, "danger");
+        }
+      });
+
+      document
+        .getElementById("btnLogout")
+        .addEventListener("click", async () => {
+          try {
+            await postJson("/api/twitch/logout");
+            await refreshStatus();
+            if (typeof window.refreshNavbarTwitchIdentity === "function") {
+              await window.refreshNavbarTwitchIdentity();
+            }
+            window.dispatchEvent(new Event("twitch-auth-changed"));
+          } catch (err) {
+            setStatus(`Erro no logout: ${err.message}`, "danger");
+          }
+        });
+
+      refreshStatus();
+      setInterval(refreshStatus, 4000);
+    </script>
+  </body>
+</html>

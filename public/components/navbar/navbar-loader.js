@@ -34,6 +34,67 @@ function setupThemeToggle(mount) {
   });
 }
 
+let navbarTwitchMount = null;
+
+function renderTwitchIdentity(mount, status, hasConnectionError = false) {
+  const chip = mount.querySelector("[data-twitch-chip]");
+  const icon = mount.querySelector("[data-user-icon]");
+  if (!chip || !icon) return;
+
+  chip.onclick = null;
+
+  const displayName = String(status?.auth?.displayName || "").trim();
+  const login = String(status?.auth?.login || "").trim();
+  const profileImageUrl = String(status?.auth?.profileImageUrl || "").trim();
+  const isConnected =
+    Boolean(status?.auth?.broadcasterId) && !hasConnectionError;
+
+  if (isConnected) {
+    chip.classList.remove("disconnected", "connectable");
+    chip.title = displayName || login || "Twitch conectado";
+    chip.setAttribute("aria-label", displayName || login || "Twitch conectado");
+
+    if (profileImageUrl) {
+      icon.style.backgroundImage = `url("${profileImageUrl.replace(/"/g, "%22")}")`;
+      icon.textContent = "";
+    } else {
+      icon.style.backgroundImage = "none";
+      icon.textContent = (displayName || login || "T")
+        .slice(0, 1)
+        .toUpperCase();
+    }
+    return;
+  }
+
+  icon.style.backgroundImage = "none";
+  icon.textContent = String.fromCodePoint(0x1f50c);
+  chip.classList.add("disconnected", "connectable");
+  chip.title = "Conectar Twitch";
+  chip.setAttribute("aria-label", "Conectar Twitch");
+  chip.onclick = () => {
+    window.location.href = "/api/twitch/connect";
+  };
+}
+
+async function setupTwitchIdentity(mount) {
+  try {
+    const res = await fetch("/api/twitch/status", {
+      cache: "no-store",
+      headers: { Accept: "application/json" },
+    });
+
+    if (!res.ok) {
+      renderTwitchIdentity(mount, null, true);
+      return;
+    }
+
+    const status = await res.json();
+    renderTwitchIdentity(mount, status, false);
+  } catch {
+    renderTwitchIdentity(mount, null, true);
+  }
+}
+
 async function loadSharedNavbar(mountId = "navbarMount") {
   const mount = document.getElementById(mountId);
   if (!mount) return;
@@ -56,6 +117,7 @@ async function loadSharedNavbar(mountId = "navbarMount") {
 
     const html = await res.text();
     mount.innerHTML = html;
+    navbarTwitchMount = mount;
 
     const activeTheme =
       document.documentElement.getAttribute("data-theme") ||
@@ -63,6 +125,7 @@ async function loadSharedNavbar(mountId = "navbarMount") {
     applyTheme(activeTheme);
     updateThemeToggleIcon(mount, activeTheme);
     setupThemeToggle(mount);
+    await setupTwitchIdentity(mount);
 
     const currentFile = window.location.pathname.split("/").pop();
 
@@ -78,7 +141,20 @@ async function loadSharedNavbar(mountId = "navbarMount") {
   }
 }
 
+async function refreshNavbarTwitchIdentity() {
+  if (!navbarTwitchMount) {
+    return;
+  }
+
+  await setupTwitchIdentity(navbarTwitchMount);
+}
+
 window.loadSharedNavbar = loadSharedNavbar;
+window.refreshNavbarTwitchIdentity = refreshNavbarTwitchIdentity;
+
+window.addEventListener("twitch-auth-changed", () => {
+  refreshNavbarTwitchIdentity();
+});
 
 document.addEventListener("DOMContentLoaded", () => {
   applyTheme(resolveStoredTheme());

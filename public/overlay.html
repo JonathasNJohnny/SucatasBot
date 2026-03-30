@@ -33,10 +33,16 @@
         packImageData: "",
         cardImageData: "",
       };
+      const DEFAULT_ANIMATION_CONFIG = {
+        packSwingCount: 2,
+        packRevealDelayMs: 1800,
+        cardVisibleMs: 4000,
+      };
       const INITIAL_CARD_CONFIG = {
         style: { ...DEFAULT_CARD_STYLE },
         packLabel: DEFAULT_PACK_LABEL,
         images: { ...EMPTY_IMAGE_STYLE },
+        animation: { ...DEFAULT_ANIMATION_CONFIG },
       };
       const gachaQueue = [];
       let isPlaying = false;
@@ -62,6 +68,15 @@
           return DEFAULT_PACK_LABEL;
         }
         return value;
+      }
+
+      function sanitizeInt(value, fallback, min, max) {
+        const parsed = Number.parseInt(String(value ?? ""), 10);
+        if (!Number.isFinite(parsed)) {
+          return fallback;
+        }
+
+        return Math.min(Math.max(parsed, min), max);
       }
 
       function sanitizeImageData(value) {
@@ -105,6 +120,26 @@
           images: {
             packImageData: sanitizeImageData(parsed.packImageData),
             cardImageData: sanitizeImageData(parsed.cardImageData),
+          },
+          animation: {
+            packSwingCount: sanitizeInt(
+              parsed.packSwingCount,
+              DEFAULT_ANIMATION_CONFIG.packSwingCount,
+              1,
+              12,
+            ),
+            packRevealDelayMs: sanitizeInt(
+              parsed.packRevealDelayMs,
+              DEFAULT_ANIMATION_CONFIG.packRevealDelayMs,
+              200,
+              15000,
+            ),
+            cardVisibleMs: sanitizeInt(
+              parsed.cardVisibleMs,
+              DEFAULT_ANIMATION_CONFIG.cardVisibleMs,
+              400,
+              30000,
+            ),
           },
         };
       }
@@ -290,14 +325,19 @@
         pack.style.transform = "scale(1)";
         pack.style.animation = "none";
         void pack.offsetWidth;
-        pack.style.animation = "packSwing 0.9s ease-in-out";
+        const animationConfig =
+          currentCardConfig?.animation || DEFAULT_ANIMATION_CONFIG;
+        const swingCount = animationConfig.packSwingCount;
+        const packRevealDelayMs = animationConfig.packRevealDelayMs;
+        const cardVisibleMs = animationConfig.cardVisibleMs;
+        pack.style.animation = `packSwing 0.9s ease-in-out ${swingCount}`;
 
-        await sleep(1800);
+        await sleep(packRevealDelayMs);
 
         card.style.transform = "translateY(0) scale(1)";
         card.style.opacity = "1";
 
-        await sleep(4000);
+        await sleep(cardVisibleMs);
 
         // reset
         pack.style.transform = "scale(0)";

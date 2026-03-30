@@ -67,6 +67,47 @@
               <small id="cardImageStatus">Nenhuma imagem selecionada.</small>
             </div>
           </div>
+
+          <div class="group">
+            <h2>Animacao</h2>
+
+            <div class="field">
+              <label for="packSwingCountInput">Quantidade de balancos</label>
+              <input
+                id="packSwingCountInput"
+                type="number"
+                min="1"
+                max="12"
+                step="1"
+              />
+            </div>
+
+            <div class="field">
+              <label for="packRevealDelayMsInput"
+                >Tempo para soltar a carta (ms)</label
+              >
+              <input
+                id="packRevealDelayMsInput"
+                type="number"
+                min="200"
+                max="15000"
+                step="100"
+              />
+            </div>
+
+            <div class="field">
+              <label for="cardVisibleMsInput"
+                >Tempo que a carta fica na tela (ms)</label
+              >
+              <input
+                id="cardVisibleMsInput"
+                type="number"
+                min="400"
+                max="30000"
+                step="100"
+              />
+            </div>
+          </div>
         </div>
 
         <div class="actions">
@@ -100,7 +141,18 @@
       const cardImageStatusEl = document.getElementById("cardImageStatus");
       const btnSave = document.getElementById("btnSave");
       const btnReset = document.getElementById("btnReset");
+      const packSwingCountInputEl = document.getElementById(
+        "packSwingCountInput",
+      );
+      const packRevealDelayMsInputEl = document.getElementById(
+        "packRevealDelayMsInput",
+      );
+      const cardVisibleMsInputEl =
+        document.getElementById("cardVisibleMsInput");
       const MAX_IMAGE_BYTES = 4 * 1024 * 1024;
+      const DEFAULT_PACK_SWING_COUNT = 2;
+      const DEFAULT_PACK_REVEAL_DELAY_MS = 1800;
+      const DEFAULT_CARD_VISIBLE_MS = 4000;
 
       let selectedPackImageData = "";
       let selectedCardImageData = "";
@@ -174,6 +226,9 @@
           packLabel: DEFAULT_PACK_LABEL,
           packImageData: "",
           cardImageData: "",
+          packSwingCount: DEFAULT_PACK_SWING_COUNT,
+          packRevealDelayMs: DEFAULT_PACK_REVEAL_DELAY_MS,
+          cardVisibleMs: DEFAULT_CARD_VISIBLE_MS,
         };
       }
 
@@ -189,6 +244,15 @@
           return DEFAULT_PACK_LABEL;
         }
         return value;
+      }
+
+      function sanitizeInt(value, fallback, min, max) {
+        const parsed = Number.parseInt(String(value ?? ""), 10);
+        if (!Number.isFinite(parsed)) {
+          return fallback;
+        }
+
+        return Math.min(Math.max(parsed, min), max);
       }
 
       function loadConfig() {
@@ -210,6 +274,24 @@
           defaults.packLabel = normalizePackLabel(parsed.packLabel);
           defaults.packImageData = sanitizeImageData(parsed.packImageData);
           defaults.cardImageData = sanitizeImageData(parsed.cardImageData);
+          defaults.packSwingCount = sanitizeInt(
+            parsed.packSwingCount,
+            DEFAULT_PACK_SWING_COUNT,
+            1,
+            12,
+          );
+          defaults.packRevealDelayMs = sanitizeInt(
+            parsed.packRevealDelayMs,
+            DEFAULT_PACK_REVEAL_DELAY_MS,
+            200,
+            15000,
+          );
+          defaults.cardVisibleMs = sanitizeInt(
+            parsed.cardVisibleMs,
+            DEFAULT_CARD_VISIBLE_MS,
+            400,
+            30000,
+          );
 
           return defaults;
         } catch {
@@ -236,6 +318,24 @@
         config.packLabel = normalizePackLabel(data.config.packLabel);
         config.packImageData = sanitizeImageData(data.config.packImageData);
         config.cardImageData = sanitizeImageData(data.config.cardImageData);
+        config.packSwingCount = sanitizeInt(
+          data.config.packSwingCount,
+          DEFAULT_PACK_SWING_COUNT,
+          1,
+          12,
+        );
+        config.packRevealDelayMs = sanitizeInt(
+          data.config.packRevealDelayMs,
+          DEFAULT_PACK_REVEAL_DELAY_MS,
+          200,
+          15000,
+        );
+        config.cardVisibleMs = sanitizeInt(
+          data.config.cardVisibleMs,
+          DEFAULT_CARD_VISIBLE_MS,
+          400,
+          30000,
+        );
         return config;
       }
 
@@ -350,6 +450,22 @@
         packLabelPreview.textContent = String(labelText ?? "");
       }
 
+      function runPreviewPackSwing() {
+        const pack = document.getElementById("pack");
+        if (!pack) return;
+
+        const swingCount = sanitizeInt(
+          packSwingCountInputEl.value,
+          DEFAULT_PACK_SWING_COUNT,
+          1,
+          12,
+        );
+
+        pack.style.animation = "none";
+        void pack.offsetWidth;
+        pack.style.animation = `packSwing 0.9s ease-in-out ${swingCount}`;
+      }
+
       function writeConfigToFields(config) {
         for (const field of colorFields) {
           const refs = fieldByVar.get(field.cssVar);
@@ -362,6 +478,25 @@
         packLabelInputEl.value = normalizePackLabel(config.packLabel);
         selectedPackImageData = sanitizeImageData(config.packImageData);
         selectedCardImageData = sanitizeImageData(config.cardImageData);
+        packSwingCountInputEl.value = String(
+          sanitizeInt(config.packSwingCount, DEFAULT_PACK_SWING_COUNT, 1, 12),
+        );
+        packRevealDelayMsInputEl.value = String(
+          sanitizeInt(
+            config.packRevealDelayMs,
+            DEFAULT_PACK_REVEAL_DELAY_MS,
+            200,
+            15000,
+          ),
+        );
+        cardVisibleMsInputEl.value = String(
+          sanitizeInt(
+            config.cardVisibleMs,
+            DEFAULT_CARD_VISIBLE_MS,
+            400,
+            30000,
+          ),
+        );
         updateImageStatus();
       }
 
@@ -380,6 +515,24 @@
         defaults.packLabel = String(packLabelInputEl.value ?? "");
         defaults.packImageData = selectedPackImageData;
         defaults.cardImageData = selectedCardImageData;
+        defaults.packSwingCount = sanitizeInt(
+          packSwingCountInputEl.value,
+          DEFAULT_PACK_SWING_COUNT,
+          1,
+          12,
+        );
+        defaults.packRevealDelayMs = sanitizeInt(
+          packRevealDelayMsInputEl.value,
+          DEFAULT_PACK_REVEAL_DELAY_MS,
+          200,
+          15000,
+        );
+        defaults.cardVisibleMs = sanitizeInt(
+          cardVisibleMsInputEl.value,
+          DEFAULT_CARD_VISIBLE_MS,
+          400,
+          30000,
+        );
         return defaults;
       }
 
@@ -468,7 +621,7 @@
         }
         if (pack) {
           pack.style.transform = "scale(1)";
-          pack.style.animation = "packSwing 0.9s ease-in-out infinite";
+          runPreviewPackSwing();
         }
       }
 
@@ -485,6 +638,10 @@
 
       packLabelInputEl.addEventListener("input", () => {
         applyPackLabelToPreview(packLabelInputEl.value);
+      });
+
+      packSwingCountInputEl.addEventListener("input", () => {
+        runPreviewPackSwing();
       });
 
       btnImportPack.addEventListener("click", () => {

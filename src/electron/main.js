@@ -449,8 +449,8 @@ function createWindowsAfterSetup() {
     icon: path.join(__dirname, "..", "..", "icon.png"),
   });
 
-  mainWindow.setTitle("Lizah Gacha");
-  mainWindow.loadURL("http://localhost:49382/twitchControl.html");
+  mainWindow.setTitle("Sucatas Bot");
+  mainWindow.loadURL("http://localhost:49382/controlPanel.html");
 
   mainWindow.on("close", (event) => {
     if (isQuitting) {
@@ -505,8 +505,8 @@ if (!hasSingleInstanceLock) {
               ),
               "utf8",
             );
-            loadServer();
-            setTimeout(createWindowsAfterSetup, 1000);
+            app.relaunch();
+            app.exit(0);
             return { success: true };
           } catch (err) {
             console.error("Erro ao salvar cache:", err);

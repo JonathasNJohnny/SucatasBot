@@ -143,8 +143,11 @@ function createSetupWindow(preloadPath) {
           window.electron.saveConfig({
             clientId,
             clientSecret,
-          }).then(() => {
-            window.close();
+          }).then((result) => {
+            if (!result || result.success === false) {
+              errorDiv.textContent = (result && result.message) || 'Erro ao salvar configuracao';
+              return;
+            }
           }).catch((err) => {
             errorDiv.textContent = 'Erro ao salvar: ' + err;
           });

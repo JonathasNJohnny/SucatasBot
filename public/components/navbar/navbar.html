@@ -1,11 +1,28 @@
 <nav class="navbar">
-  <div class="navbar-brand">Sucatas Bot</div>
+  <div class="navbar-brand">
+    <button
+      class="navbar-user-chip disconnected"
+      type="button"
+      data-twitch-chip
+      aria-label="Conectar Twitch"
+      title="Conectar Twitch"
+    >
+      <span class="navbar-user-icon" data-user-icon aria-hidden="true"
+        >&#128268;</span
+      >
+    </button>
+    <span class="navbar-brand-name">SucatasBot</span>
+  </div>
   <div class="navbar-actions">
     <ul class="navbar-links">
       <li>
         <a>Efeitos Sonoros</a>
       </li>
-
+      <li>
+        <a href="/controlPanel.html" data-nav="controlPanel.html"
+          >Painel de Controle</a
+        >
+      </li>
       <li class="dropdown">
         <a
           class="dropdown-toggle"
@@ -20,11 +37,10 @@
           <li>
             <a href="/importItems.html"> Importação </a>
           </li>
+          <li>
+            <a href="/cardReward.html"> Resgates </a>
+          </li>
         </ul>
-      </li>
-
-      <li>
-        <a href="/twitchControl.html" data-nav="twitchControl.html">Twitch</a>
       </li>
     </ul>
     <button
