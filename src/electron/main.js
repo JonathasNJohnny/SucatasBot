@@ -15,6 +15,7 @@ let serverModule = null;
 let mainWindow = null;
 let tray = null;
 let isQuitting = false;
+const hasSingleInstanceLock = app.requestSingleInstanceLock();
 
 // Detecta primeira execução
 const FIRST_RUN_CHECK_FILE = path.join(
@@ -179,6 +180,29 @@ function showMainWindow() {
   mainWindow.focus();
 }
 
+function restoreExistingWindow() {
+  // Prioriza a janela principal (oculta na tray), mas faz fallback para
+  // qualquer janela ativa caso o setup inicial esteja aberto.
+  if (mainWindow && !mainWindow.isDestroyed()) {
+    showMainWindow();
+    return;
+  }
+
+  const windows = BrowserWindow.getAllWindows();
+  const visibleWindow = windows.find((win) => !win.isDestroyed()) || null;
+
+  if (!visibleWindow) {
+    return;
+  }
+
+  if (visibleWindow.isMinimized()) {
+    visibleWindow.restore();
+  }
+
+  visibleWindow.show();
+  visibleWindow.focus();
+}
+
 function createTray() {
   if (tray) {
     return;
@@ -266,65 +290,73 @@ function createWindowsAfterSetup() {
   createTray();
 }
 
-app.whenReady().then(() => {
-  checkForUpdatesBeforeStart(isFirstRun()).then((isInstallingUpdate) => {
-    if (isInstallingUpdate) {
-      return;
-    }
-
-    createPreloadFile();
-    const preloadPath = path.join(__dirname, "preload.js");
-
-    const hasClientCredentials = hasClientCredentialsInCache();
-
-    const setupEnvHandler = () => {
-      ipcMain.handle("save-config", async (event, data) => {
-        if (!data || !data.clientId || !data.clientSecret) {
-          return { success: false, message: "Dados invalidos" };
-        }
-
-        try {
-          ensureAuthCacheDir();
-          const cached = loadCachedConfig();
-          fs.writeFileSync(
-            AUTH_CACHE_FILE,
-            JSON.stringify(
-              {
-                ...cached,
-                clientId: String(data.clientId || "").trim(),
-                clientSecret: String(data.clientSecret || "").trim(),
-                credentialsUpdatedAt: new Date().toISOString(),
-              },
-              null,
-              2,
-            ),
-            "utf8",
-          );
-          loadServer();
-          setTimeout(createWindowsAfterSetup, 1000);
-          return { success: true };
-        } catch (err) {
-          console.error("Erro ao salvar cache:", err);
-          return { success: false, message: err.message };
-        }
-      });
-    };
-
-    if (!hasClientCredentials) {
-      createSetupWindow(preloadPath);
-      setupEnvHandler();
-    } else {
-      // Credenciais ja existem no cache
-      loadServer();
-      setTimeout(createWindowsAfterSetup, 1000);
-    }
+if (!hasSingleInstanceLock) {
+  app.quit();
+} else {
+  app.on("second-instance", () => {
+    restoreExistingWindow();
   });
-});
 
-app.on("before-quit", () => {
-  isQuitting = true;
-});
+  app.whenReady().then(() => {
+    checkForUpdatesBeforeStart(isFirstRun()).then((isInstallingUpdate) => {
+      if (isInstallingUpdate) {
+        return;
+      }
 
-app.on("activate", () => {
-  showMainWindow();
-});
+      createPreloadFile();
+      const preloadPath = path.join(__dirname, "preload.js");
+
+      const hasClientCredentials = hasClientCredentialsInCache();
+
+      const setupEnvHandler = () => {
+        ipcMain.handle("save-config", async (event, data) => {
+          if (!data || !data.clientId || !data.clientSecret) {
+            return { success: false, message: "Dados invalidos" };
+          }
+
+          try {
+            ensureAuthCacheDir();
+            const cached = loadCachedConfig();
+            fs.writeFileSync(
+              AUTH_CACHE_FILE,
+              JSON.stringify(
+                {
+                  ...cached,
+                  clientId: String(data.clientId || "").trim(),
+                  clientSecret: String(data.clientSecret || "").trim(),
+                  credentialsUpdatedAt: new Date().toISOString(),
+                },
+                null,
+                2,
+              ),
+              "utf8",
+            );
+            loadServer();
+            setTimeout(createWindowsAfterSetup, 1000);
+            return { success: true };
+          } catch (err) {
+            console.error("Erro ao salvar cache:", err);
+            return { success: false, message: err.message };
+          }
+        });
+      };
+
+      if (!hasClientCredentials) {
+        createSetupWindow(preloadPath);
+        setupEnvHandler();
+      } else {
+        // Credenciais ja existem no cache
+        loadServer();
+        setTimeout(createWindowsAfterSetup, 1000);
+      }
+    });
+  });
+
+  app.on("before-quit", () => {
+    isQuitting = true;
+  });
+
+  app.on("activate", () => {
+    restoreExistingWindow();
+  });
+}
