@@ -12,7 +12,7 @@
     },
     "win": {
       "target": [
-        "portable"
+        "nsis"
       ],
       "icon": "icon.png",
       "cscLink": "sucatas-bot-cert.pfx",
@@ -31,7 +31,9 @@
     "test": "echo \"Error: no test specified\" && exit 1",
     "start": "electron .",
     "dev": "node server.js --open",
-    "build": "electron-builder"
+    "build": "electron-builder",
+    "build:win": "electron-builder --win nsis",
+    "publish:win": "electron-builder --win nsis --publish always"
   },
   "keywords": [],
   "author": "",
