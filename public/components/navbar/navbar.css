@@ -87,3 +87,86 @@
     flex-wrap: wrap;
   }
 }
+.dropdown {
+  position: relative;
+}
+
+/* 🔥 ponte invisível pra não perder o hover */
+.dropdown::after {
+  content: "";
+  position: absolute;
+  top: 100%;
+  right: 0;
+  width: 100%;
+  height: 12px; /* aumenta se quiser mais tolerância */
+}
+
+.dropdown-toggle {
+  cursor: pointer;
+  color: var(--muted);
+  font-weight: 500;
+  text-decoration: none;
+  transition: all 0.3s ease;
+}
+
+.dropdown-toggle:hover {
+  color: var(--ok);
+}
+
+/* Menu escondido por padrão */
+.dropdown-menu {
+  position: absolute;
+  top: 120%;
+  right: 0;
+  left: auto;
+  max-width: calc(100vw - 20px);
+  width: max-content;
+  overflow-wrap: break-word;
+
+  background: var(--panel-strong);
+  border: 1px solid var(--line);
+  border-radius: var(--radius-md);
+  box-shadow: var(--shadow-navbar);
+  list-style: none;
+  padding: 0.5rem 0;
+  margin: 0;
+  min-width: 220px;
+
+  opacity: 0;
+  transform: translateY(-5px);
+  pointer-events: none;
+
+  /* 🔥 melhora estabilidade */
+  visibility: hidden;
+  transition:
+    all 0.25s ease,
+    visibility 0.25s;
+
+  z-index: 1000;
+}
+
+/* Mostrar no hover */
+.dropdown:hover .dropdown-menu {
+  opacity: 1;
+  transform: translateY(0);
+  pointer-events: auto;
+  visibility: visible;
+}
+
+/* Itens internos */
+.dropdown-menu li {
+  width: 100%;
+}
+
+.dropdown-menu a {
+  display: block;
+  padding: 0.6rem 1rem;
+  color: var(--muted);
+  text-decoration: none;
+  transition: all 0.2s ease;
+}
+
+.dropdown-menu a:hover {
+  background: var(--input-bg);
+  color: var(--ok);
+}

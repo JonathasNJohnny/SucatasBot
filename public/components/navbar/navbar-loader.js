@@ -65,10 +65,14 @@ async function loadSharedNavbar(mountId = "navbarMount") {
     setupThemeToggle(mount);
 
     const currentFile = window.location.pathname.split("/").pop();
-    const currentLink = mount.querySelector(`[data-nav="${currentFile}"]`);
-    if (currentLink) {
-      currentLink.classList.add("active");
-    }
+
+    mount.querySelectorAll("[data-nav]").forEach((link) => {
+      const pages = link.dataset.nav.split(",").map((p) => p.trim());
+
+      if (pages.includes(currentFile)) {
+        link.classList.add("active");
+      }
+    });
   } catch {
     // Ignora falhas de carregamento da navbar compartilhada.
   }
