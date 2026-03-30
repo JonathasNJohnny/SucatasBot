@@ -18,6 +18,9 @@
       "cscLink": "sucatas-bot-cert.pfx",
       "cscKeyPassword": "sucatasbot123"
     },
+    "nsis": {
+      "artifactName": "${productName} Setup.${ext}"
+    },
     "publish": [
       {
         "provider": "github",

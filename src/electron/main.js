@@ -16,6 +16,18 @@ let mainWindow = null;
 let tray = null;
 let isQuitting = false;
 
+// Detecta primeira execução
+const FIRST_RUN_CHECK_FILE = path.join(
+  app.getPath("userData"),
+  ".first-run-done",
+);
+function isFirstRun() {
+  return !fs.existsSync(FIRST_RUN_CHECK_FILE);
+}
+function markFirstRunDone() {
+  fs.writeFileSync(FIRST_RUN_CHECK_FILE, "true");
+}
+
 function parseTagVersion(versionLike) {
   const raw = String(versionLike || "").trim();
   if (!raw) {
@@ -56,7 +68,7 @@ function isRemoteVersionGreater(currentVersion, remoteVersion) {
   return remote.patch > current.patch;
 }
 
-async function checkForUpdatesBeforeStart() {
+async function checkForUpdatesBeforeStart(forceDownload = false) {
   // Atualizacao automatica funciona em app empacotado com release publicado.
   if (!app.isPackaged) {
     return false;
@@ -65,6 +77,7 @@ async function checkForUpdatesBeforeStart() {
   autoUpdater.autoDownload = false;
   autoUpdater.autoInstallOnAppQuit = false;
   autoUpdater.allowPrerelease = false;
+  autoUpdater.stageUpdates = true; // Economiza espaço em disco durante updates
 
   try {
     const currentVersion = app.getVersion();
@@ -83,6 +96,37 @@ async function checkForUpdatesBeforeStart() {
       return false;
     }
 
+    // Na primeira execução, força o download obrigatoriamente
+    if (forceDownload) {
+      await dialog.showMessageBox({
+        type: "info",
+        buttons: ["OK"],
+        defaultId: 0,
+        noLink: true,
+        title: "Baixando versão completa",
+        message: `Preparando a versão ${nextVersion}...`,
+        detail: "Isso pode levar alguns minutos.",
+      });
+
+      await autoUpdater.downloadUpdate();
+      markFirstRunDone();
+
+      await dialog.showMessageBox({
+        type: "info",
+        buttons: ["OK"],
+        defaultId: 0,
+        noLink: true,
+        title: "Setup concluído",
+        message: "Versão pronta para usar.",
+        detail: "O app será reiniciado agora.",
+      });
+
+      isQuitting = true;
+      autoUpdater.quitAndInstall(false, true);
+      return true;
+    }
+
+    // Em execuções normais, permite usuário escolher
     const { response } = await dialog.showMessageBox({
       type: "info",
       buttons: ["Sim, atualizar", "Nao, continuar"],
@@ -223,7 +267,7 @@ function createWindowsAfterSetup() {
 }
 
 app.whenReady().then(() => {
-  checkForUpdatesBeforeStart().then((isInstallingUpdate) => {
+  checkForUpdatesBeforeStart(isFirstRun()).then((isInstallingUpdate) => {
     if (isInstallingUpdate) {
       return;
     }
