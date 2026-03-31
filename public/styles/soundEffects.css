@@ -235,6 +235,7 @@
 }
 
 .upload-btn,
+.preview-btn,
 .danger {
   border: none;
   border-radius: var(--radius-md);
@@ -242,8 +243,24 @@
   cursor: pointer;
 }
 
+.preview-btn {
+  background: var(--button-primary);
+  color: var(--text-inverse);
+  min-width: 42px;
+  text-align: center;
+  padding: 8px 10px;
+}
+
+.preview-btn.is-stop {
+  background: var(--button-stop);
+}
+
 .upload-btn {
   background: var(--button-primary-alt);
+  color: var(--text-inverse);
+}
+
+label.upload-btn {
   color: var(--text-inverse);
 }
 
@@ -261,7 +278,7 @@
 .hint {
   margin-top: 8px;
   font-size: 0.8rem;
-  color: var(--text-soft);
+  color: var(--text-inverse);
 }
 
 .effect-progress-wrap {

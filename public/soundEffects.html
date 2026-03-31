@@ -49,6 +49,8 @@
       let effectsState = [];
       const editingEffects = new Set();
       let pendingRefreshAfterEdit = false;
+      let activePreviewStop = null;
+      let activePreviewButton = null;
 
       function beginEditing(effectId) {
         if (!effectId) return;
@@ -228,6 +230,7 @@
           </div>
 
           <div class="actions-row">
+            <label><button class="preview-btn" data-action="preview" aria-label="Tocar audio" title="Tocar audio">▶</button></label>
             <label class="upload-btn">
               Importar audio
               <input data-field="audio" type="file" accept="audio/*" hidden />
@@ -248,12 +251,45 @@
         const progressFill = card.querySelector("[data-field='progressFill']");
         const progressText = card.querySelector("[data-field='progressText']");
         const audioInput = card.querySelector("[data-field='audio']");
+        const previewBtn = card.querySelector("[data-action='preview']");
         const deleteBtn = card.querySelector("[data-action='delete']");
 
         let applyTimeoutId = null;
         let progressIntervalId = null;
         let countdownStartedAt = 0;
         let volumeSaveTimeoutId = null;
+        let previewAudio = null;
+        let isPreviewPlaying = false;
+
+        function setPreviewState(isPlaying) {
+          isPreviewPlaying = Boolean(isPlaying);
+          previewBtn.textContent = isPreviewPlaying ? "⏹" : "▶";
+          previewBtn.classList.toggle("is-stop", isPreviewPlaying);
+          previewBtn.setAttribute(
+            "aria-label",
+            isPreviewPlaying ? "Parar audio" : "Tocar audio",
+          );
+          previewBtn.title = isPreviewPlaying ? "Parar audio" : "Tocar audio";
+        }
+
+        function stopPreview() {
+          if (!previewAudio) {
+            setPreviewState(false);
+            return;
+          }
+
+          previewAudio.pause();
+          previewAudio.currentTime = 0;
+          previewAudio.onended = null;
+          previewAudio.onerror = null;
+          previewAudio = null;
+          setPreviewState(false);
+
+          if (activePreviewButton === previewBtn) {
+            activePreviewButton = null;
+            activePreviewStop = null;
+          }
+        }
 
         function clearCardTimers() {
           if (applyTimeoutId) {
@@ -343,6 +379,51 @@
 
         volumeInput.addEventListener("input", () => {
           saveVolumeImmediately();
+
+          if (previewAudio) {
+            previewAudio.volume = clampVolume(volumeInput.value) / 100;
+          }
+        });
+
+        previewBtn.addEventListener("click", () => {
+          if (isPreviewPlaying) {
+            stopPreview();
+            return;
+          }
+
+          if (activePreviewStop && activePreviewButton !== previewBtn) {
+            activePreviewStop();
+          }
+
+          const audioUrl = String(effect.audioPath || "").trim();
+          if (!audioUrl) {
+            card.querySelector(".hint").textContent =
+              "Importe um audio para testar";
+            return;
+          }
+
+          setPreviewState(true);
+          previewAudio = new Audio(audioUrl);
+          previewAudio.preload = "auto";
+          previewAudio.volume = clampVolume(volumeInput.value) / 100;
+          activePreviewButton = previewBtn;
+          activePreviewStop = stopPreview;
+          previewAudio.onended = () => {
+            stopPreview();
+          };
+          previewAudio.onerror = () => {
+            stopPreview();
+            card.querySelector(".hint").textContent = "Falha ao tocar audio";
+          };
+
+          previewAudio
+            .play()
+            .then(() => {})
+            .catch(() => {
+              stopPreview();
+              card.querySelector(".hint").textContent =
+                "Nao foi possivel iniciar o audio";
+            });
         });
 
         enabledInput.addEventListener("change", async () => {
@@ -376,6 +457,7 @@
           if (!confirm("Excluir este resgate de efeito sonoro?")) return;
           beginEditing(id);
           try {
+            stopPreview();
             clearCardTimers();
             await deleteEffect(id);
           } catch (err) {
