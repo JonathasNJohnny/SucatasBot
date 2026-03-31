@@ -15,7 +15,7 @@ const DEFAULT_REDEMPTION_NAME = "Abrir Carta de Pelucia";
 const DEFAULT_REWARD_COST = 1;
 const DEFAULT_REWARD_COLOR = "#9147FF";
 const DEFAULT_REWARD_ENABLED = true;
-const TWITCH_POLL_INTERVAL_MS = 4000;
+const TWITCH_POLL_INTERVAL_MS = 2000;
 const TWITCH_REDIRECT_URI =
   process.env.TWITCH_REDIRECT_URI ||
   `http://localhost:${PORT}/api/twitch/callback`;
@@ -32,6 +32,7 @@ const AUTH_CACHE_DIR = path.join(
 const AUTH_CACHE_FILE = path.join(AUTH_CACHE_DIR, "twitch-auth.json");
 const RUNTIME_DATA_DIR = path.join(AUTH_CACHE_DIR, "runtime");
 const RUNTIME_IMGS_DIR = path.join(RUNTIME_DATA_DIR, "imgs");
+const RUNTIME_AUDIO_DIR = path.join(RUNTIME_DATA_DIR, "audio");
 const CARD_STYLE_FILE = path.join(RUNTIME_DATA_DIR, "card-style.json");
 const REDEMPTIONS_LOG_FILE = path.join(RUNTIME_DATA_DIR, "redems.txt");
 const LEGACY_REDEMPTIONS_LOG_FILE = path.join(RUNTIME_DATA_DIR, "resgates.txt");
@@ -43,14 +44,18 @@ const LEGACY_IMPORTED_ITEMS_FILE = path.join(
 const CREATED_REWARDS_FILE = path.join(RUNTIME_DATA_DIR, "createdRewards.json");
 const ITEMS_UPLOAD_DIR = path.join(RUNTIME_IMGS_DIR, "items");
 const LEGACY_PLUSHIES_UPLOAD_DIR = path.join(RUNTIME_IMGS_DIR, "plushies");
+const SOUND_EFFECTS_UPLOAD_DIR = path.join(RUNTIME_AUDIO_DIR, "effects");
 const BUNDLED_IMGS_DIR = path.join(PROJECT_ROOT_DIR, "imgs");
 const GACHAPON_REWARD_TYPE = "gachapon";
+const SOUND_EFFECT_REWARD_TYPE = "soundEffect";
+const SOUND_EFFECT_TAG = "[soundEffect]";
 const PUBLIC_FILES = new Set([
   "importItems.html",
   "cardCustomization.html",
   "controlPanel.html",
   "overlay.html",
   "cardReward.html",
+  "soundEffects.html",
   "twitchCallback.html",
 ]);
 
@@ -97,8 +102,10 @@ function ensureRuntimeDirs() {
     AUTH_CACHE_DIR,
     RUNTIME_DATA_DIR,
     RUNTIME_IMGS_DIR,
+    RUNTIME_AUDIO_DIR,
     ITEMS_UPLOAD_DIR,
     LEGACY_PLUSHIES_UPLOAD_DIR,
+    SOUND_EFFECTS_UPLOAD_DIR,
   ];
 
   for (const dirPath of requiredDirs) {
@@ -259,6 +266,14 @@ function parseRewardEnabled(value, fallback = DEFAULT_REWARD_ENABLED) {
   }
   if (typeof value === "number") return value !== 0;
   return fallback;
+}
+
+function parseVolume(value, fallback = 0.8) {
+  const numeric = Number.parseFloat(String(value ?? ""));
+  if (!Number.isFinite(numeric)) {
+    return fallback;
+  }
+  return Math.min(Math.max(numeric, 0), 1);
 }
 
 function sanitizeHex(value, fallback) {
@@ -546,6 +561,38 @@ function parseDataUrlImage(imageDataUrl) {
   return { ext, buffer };
 }
 
+function parseDataUrlAudio(audioDataUrl) {
+  const match =
+    /^data:audio\/(mpeg|mp3|wav|x-wav|ogg|webm|mp4|aac);base64,([A-Za-z0-9+/=\r\n]+)$/i.exec(
+      String(audioDataUrl || ""),
+    );
+
+  if (!match) {
+    throw new Error("Audio invalido. Selecione um arquivo de audio valido.");
+  }
+
+  const rawExt = match[1].toLowerCase();
+  const extByType = {
+    mpeg: "mp3",
+    mp3: "mp3",
+    wav: "wav",
+    "x-wav": "wav",
+    ogg: "ogg",
+    webm: "webm",
+    mp4: "m4a",
+    aac: "aac",
+  };
+  const ext = extByType[rawExt] || "mp3";
+  const base64 = match[2].replace(/\s+/g, "");
+  const buffer = Buffer.from(base64, "base64");
+
+  if (!buffer.length) {
+    throw new Error("Audio vazio.");
+  }
+
+  return { ext, buffer };
+}
+
 function pickRandomWeightedItem(items) {
   if (!items || items.length === 0) return null;
 
@@ -592,8 +639,33 @@ function triggerOverlayFromPlushies(source = "manual", options = {}) {
   return { item, drawId };
 }
 
+function formatTimestampUtcMinus3Parts(dateInput) {
+  const date = dateInput instanceof Date ? dateInput : new Date(dateInput);
+  if (Number.isNaN(date.getTime())) {
+    return { datePart: "", timePart: "" };
+  }
+
+  // UTC-3 sem depender do timezone local da maquina.
+  const utcMinus3Ms = date.getTime() - 3 * 60 * 60 * 1000;
+  const shifted = new Date(utcMinus3Ms);
+  const iso = shifted.toISOString();
+
+  return {
+    datePart: iso.slice(0, 10),
+    timePart: iso.slice(11, 19),
+  };
+}
+
+function formatTimestampUtcMinus3(dateInput) {
+  const { datePart, timePart } = formatTimestampUtcMinus3Parts(dateInput);
+  if (!datePart || !timePart) {
+    return "";
+  }
+  return `${datePart} ${timePart}`;
+}
+
 function appendRedemptionLogLine(userName, plushieName) {
-  const timestamp = new Date().toISOString();
+  const timestamp = formatTimestampUtcMinus3(new Date());
   const safeUser = String(userName || "desconhecido").trim() || "desconhecido";
   const safePlushie =
     String(plushieName || "desconhecida").trim() || "desconhecida";
@@ -606,6 +678,21 @@ function appendRedemptionLogLine(userName, plushieName) {
   });
 }
 
+function appendSoundEffectRedemptionLogLine(userName, rewardName) {
+  const timestamp = formatTimestampUtcMinus3(new Date());
+  const safeUser = String(userName || "desconhecido").trim() || "desconhecido";
+  const safeReward = String(rewardName || "efeito").trim() || "efeito";
+  const line = `${timestamp} | ${safeUser} | ${SOUND_EFFECT_TAG} ${safeReward}\n`;
+
+  fs.appendFile(REDEMPTIONS_LOG_FILE, line, (err) => {
+    if (err) {
+      console.error(
+        `[TWITCH] erro ao gravar log de sound effect: ${err.message}`,
+      );
+    }
+  });
+}
+
 function parseRedemptionLogLine(line) {
   const trimmed = String(line || "").trim();
   if (!trimmed) return null;
@@ -613,15 +700,35 @@ function parseRedemptionLogLine(line) {
   const parts = trimmed.split("|").map((part) => part.trim());
   if (parts.length < 3) return null;
 
-  const [rawTimestamp, userName, itemName] = parts;
-  const dateObj = new Date(rawTimestamp);
+  const [rawTimestamp, userName, itemNameRaw] = parts;
+  const isSoundEffect = String(itemNameRaw || "").startsWith(
+    `${SOUND_EFFECT_TAG} `,
+  );
+  const itemName = isSoundEffect
+    ? String(itemNameRaw || "")
+        .slice(`${SOUND_EFFECT_TAG} `.length)
+        .trim()
+    : itemNameRaw;
 
-  let datePart = String(rawTimestamp || "").slice(0, 10);
-  let timePart = String(rawTimestamp || "").slice(11, 19);
+  let datePart = "";
+  let timePart = "";
 
-  if (!Number.isNaN(dateObj.getTime())) {
-    datePart = dateObj.toISOString().slice(0, 10);
-    timePart = dateObj.toISOString().slice(11, 19);
+  const plainMatch = String(rawTimestamp || "")
+    .trim()
+    .match(/^(\d{4}-\d{2}-\d{2})[ T](\d{2}:\d{2}:\d{2})/);
+
+  if (plainMatch) {
+    datePart = plainMatch[1];
+    timePart = plainMatch[2];
+  } else {
+    const parsed = formatTimestampUtcMinus3Parts(rawTimestamp);
+    datePart = parsed.datePart;
+    timePart = parsed.timePart;
+  }
+
+  if (!datePart || !timePart) {
+    datePart = String(rawTimestamp || "").slice(0, 10);
+    timePart = String(rawTimestamp || "").slice(11, 19);
   }
 
   return {
@@ -630,11 +737,12 @@ function parseRedemptionLogLine(line) {
     time: timePart,
     user: userName,
     item: itemName,
+    type: isSoundEffect ? SOUND_EFFECT_REWARD_TYPE : GACHAPON_REWARD_TYPE,
     display: `${datePart} ${timePart} ${userName} - ${itemName}`,
   };
 }
 
-function loadRedemptionsLogEntries() {
+function loadRedemptionsLogEntries(filterType = null) {
   try {
     migrateRuntimeDataFiles();
     if (!fs.existsSync(REDEMPTIONS_LOG_FILE)) {
@@ -642,11 +750,17 @@ function loadRedemptionsLogEntries() {
     }
 
     const raw = fs.readFileSync(REDEMPTIONS_LOG_FILE, "utf8");
-    return raw
+    const entries = raw
       .split(/\r?\n/)
       .map(parseRedemptionLogLine)
       .filter(Boolean)
       .reverse();
+
+    if (!filterType) {
+      return entries;
+    }
+
+    return entries.filter((entry) => entry.type === filterType);
   } catch (err) {
     console.error(
       `[TWITCH] erro ao ler redems.txt: ${err instanceof Error ? err.message : String(err)}`,
@@ -1139,6 +1253,49 @@ async function updateRewardEnabled(config, enabled) {
   config.rewardEnabled = parseRewardEnabled(enabled, DEFAULT_REWARD_ENABLED);
 }
 
+async function listAllRewards(config) {
+  const rewardsUrl = new URL(
+    "https://api.twitch.tv/helix/channel_points/custom_rewards",
+  );
+  rewardsUrl.searchParams.set("broadcaster_id", config.broadcasterId);
+
+  const rewardsData = await twitchApiRequest(rewardsUrl.toString(), config);
+  return Array.isArray(rewardsData.data) ? rewardsData.data : [];
+}
+
+async function updateRewardById(config, rewardId, nextData) {
+  const id = String(rewardId || "").trim();
+  if (!id) {
+    throw new Error("Reward invalido");
+  }
+
+  const updateUrl = new URL(
+    "https://api.twitch.tv/helix/channel_points/custom_rewards",
+  );
+  updateUrl.searchParams.set("broadcaster_id", config.broadcasterId);
+  updateUrl.searchParams.set("id", id);
+
+  const response = await twitchApiRequest(updateUrl.toString(), config, {
+    method: "PATCH",
+    body: {
+      title: String(nextData?.title || "").trim(),
+      cost: parseRewardCost(nextData?.cost, DEFAULT_REWARD_COST),
+      background_color: parseRewardColor(nextData?.color, DEFAULT_REWARD_COLOR),
+      is_enabled: parseRewardEnabled(
+        nextData?.isEnabled,
+        DEFAULT_REWARD_ENABLED,
+      ),
+    },
+  });
+
+  const updated = Array.isArray(response.data) ? response.data[0] : null;
+  if (!updated || !updated.id) {
+    throw new Error("Nao foi possivel atualizar o sound effect");
+  }
+
+  return updated;
+}
+
 function normalizeRewardName(name) {
   return String(name || "")
     .normalize("NFD")
@@ -1154,38 +1311,104 @@ function logRewardsList(rewards, targetName) {
   );
 }
 
-function saveCreatedRewardsRegistry(config, rewards, deletedRewards = []) {
+function loadCreatedRewardsRegistry() {
   ensureRuntimeDirs();
 
-  const normalizedRewards = rewards.map((reward) => ({
-    id: String(reward.id || "").trim(),
-    title: String(reward.title || "").trim(),
-    type: GACHAPON_REWARD_TYPE,
-    managedBy: "system",
-    broadcasterId: String(config?.broadcasterId || "").trim(),
-    cost: Number.parseInt(String(reward.cost ?? 0), 10) || 0,
-    color: parseRewardColor(reward.background_color, DEFAULT_REWARD_COLOR),
-    isEnabled: Boolean(reward.is_enabled),
-    prompt: String(reward.prompt || ""),
-    updatedAt: new Date().toISOString(),
-  }));
+  if (!fs.existsSync(CREATED_REWARDS_FILE)) {
+    return { kind: "createdRewards", updatedAt: "", rewards: [] };
+  }
 
-  const payload = {
+  try {
+    const raw = fs.readFileSync(CREATED_REWARDS_FILE, "utf8");
+    const parsed = JSON.parse(raw);
+    const rewards = Array.isArray(parsed?.rewards) ? parsed.rewards : [];
+    return {
+      kind: "createdRewards",
+      updatedAt: String(parsed?.updatedAt || ""),
+      rewards,
+    };
+  } catch {
+    return { kind: "createdRewards", updatedAt: "", rewards: [] };
+  }
+}
+
+function saveCreatedRewardsRegistryPayload(payload) {
+  ensureRuntimeDirs();
+  const normalized = {
     kind: "createdRewards",
     updatedAt: new Date().toISOString(),
-    rewards: normalizedRewards,
-    deletedRewards: deletedRewards.map((reward) => ({
-      id: String(reward.id || "").trim(),
-      title: String(reward.title || "").trim(),
-      deletedAt: new Date().toISOString(),
-    })),
+    rewards: Array.isArray(payload?.rewards) ? payload.rewards : [],
   };
 
   fs.writeFileSync(
     CREATED_REWARDS_FILE,
-    `${JSON.stringify(payload, null, 2)}\n`,
+    `${JSON.stringify(normalized, null, 2)}\n`,
     "utf8",
   );
+}
+
+function upsertCreatedRewardEntry(entry) {
+  const registry = loadCreatedRewardsRegistry();
+  const id = String(entry?.id || "").trim();
+  if (!id) {
+    return;
+  }
+
+  const nextEntry = {
+    ...entry,
+    id,
+    title: String(entry?.title || "").trim(),
+    type: String(entry?.type || GACHAPON_REWARD_TYPE).trim(),
+    updatedAt: new Date().toISOString(),
+  };
+
+  const index = registry.rewards.findIndex((reward) => reward.id === id);
+  if (index >= 0) {
+    registry.rewards[index] = {
+      ...registry.rewards[index],
+      ...nextEntry,
+    };
+  } else {
+    registry.rewards.push(nextEntry);
+  }
+
+  saveCreatedRewardsRegistryPayload(registry);
+}
+
+function removeCreatedRewardEntryById(rewardId) {
+  const id = String(rewardId || "").trim();
+  if (!id) return;
+
+  const registry = loadCreatedRewardsRegistry();
+  registry.rewards = registry.rewards.filter((reward) => reward.id !== id);
+  saveCreatedRewardsRegistryPayload(registry);
+}
+
+function getCreatedRewardsByType(type) {
+  const normalizedType = String(type || "").trim();
+  if (!normalizedType) return [];
+
+  const registry = loadCreatedRewardsRegistry();
+  return registry.rewards.filter(
+    (reward) => String(reward?.type || "").trim() === normalizedType,
+  );
+}
+
+function normalizeSoundEffectEntry(entry) {
+  return {
+    id: String(entry?.id || "").trim(),
+    title: String(entry?.title || "").trim(),
+    type: SOUND_EFFECT_REWARD_TYPE,
+    managedBy: "system",
+    broadcasterId: String(entry?.broadcasterId || "").trim(),
+    cost: parseRewardCost(entry?.cost, DEFAULT_REWARD_COST),
+    color: parseRewardColor(entry?.color, DEFAULT_REWARD_COLOR),
+    isEnabled: parseRewardEnabled(entry?.isEnabled, DEFAULT_REWARD_ENABLED),
+    prompt: String(entry?.prompt || "Dispara um efeito sonoro no overlay"),
+    audioPath: String(entry?.audioPath || "").trim(),
+    volume: parseVolume(entry?.volume, 0.8),
+    updatedAt: String(entry?.updatedAt || ""),
+  };
 }
 
 function buildTwitchConfigFromCache() {
@@ -1225,34 +1448,20 @@ async function syncCreatedRewardsForConfig(config) {
   }
 
   const trackedReward = await ensureRewardExists(config);
-  const rewardsUrl = new URL(
-    "https://api.twitch.tv/helix/channel_points/custom_rewards",
-  );
-  rewardsUrl.searchParams.set("broadcaster_id", config.broadcasterId);
-
-  const rewardsData = await twitchApiRequest(rewardsUrl.toString(), config);
-  const rewards = Array.isArray(rewardsData.data) ? rewardsData.data : [];
-  const deletedRewards = [];
-
-  for (const reward of rewards) {
-    if (!reward?.id || reward.id === trackedReward.id) {
-      continue;
-    }
-
-    try {
-      await deleteRewardById(config, reward.id);
-      deletedRewards.push(reward);
-      console.log(
-        `[TWITCH] reward removido por gerenciamento createdRewards: id=${reward.id} title="${reward.title}"`,
-      );
-    } catch (err) {
-      console.error(
-        `[TWITCH] falha ao remover reward extra id=${reward.id}: ${err instanceof Error ? err.message : String(err)}`,
-      );
-    }
-  }
-
-  saveCreatedRewardsRegistry(config, [trackedReward], deletedRewards);
+  upsertCreatedRewardEntry({
+    id: String(trackedReward.id || "").trim(),
+    title: String(trackedReward.title || "").trim(),
+    type: GACHAPON_REWARD_TYPE,
+    managedBy: "system",
+    broadcasterId: String(config.broadcasterId || "").trim(),
+    cost: Number.parseInt(String(trackedReward.cost ?? 0), 10) || 0,
+    color: parseRewardColor(
+      trackedReward.background_color,
+      DEFAULT_REWARD_COLOR,
+    ),
+    isEnabled: Boolean(trackedReward.is_enabled),
+    prompt: String(trackedReward.prompt || ""),
+  });
 }
 
 function syncCreatedRewardsAtStartup() {
@@ -1292,6 +1501,71 @@ function trimSeenRedemptions(maxSize = 2000) {
     const next = iterator.next();
     if (next.done) break;
     twitchState.seenRedemptions.delete(next.value);
+  }
+}
+
+async function processSoundEffectRedemptions(config) {
+  const soundRewards = getCreatedRewardsByType(SOUND_EFFECT_REWARD_TYPE).map(
+    normalizeSoundEffectEntry,
+  );
+
+  for (const soundReward of soundRewards) {
+    if (!soundReward.id || !soundReward.audioPath) {
+      continue;
+    }
+
+    const redemptionsUrl = new URL(
+      "https://api.twitch.tv/helix/channel_points/custom_rewards/redemptions",
+    );
+    redemptionsUrl.searchParams.set("broadcaster_id", config.broadcasterId);
+    redemptionsUrl.searchParams.set("reward_id", soundReward.id);
+    redemptionsUrl.searchParams.set("status", "UNFULFILLED");
+    redemptionsUrl.searchParams.set("first", "25");
+
+    const redemptionsData = await twitchApiRequest(
+      redemptionsUrl.toString(),
+      config,
+    );
+    const redemptions = Array.isArray(redemptionsData.data)
+      ? redemptionsData.data
+      : [];
+
+    redemptions.sort(
+      (a, b) =>
+        new Date(a.redeemed_at).getTime() - new Date(b.redeemed_at).getTime(),
+    );
+
+    for (const redemption of redemptions) {
+      if (twitchState.seenRedemptions.has(redemption.id)) {
+        continue;
+      }
+
+      const redemptionTime = new Date(redemption.redeemed_at);
+      if (
+        twitchState.monitorStartedAt &&
+        redemptionTime < twitchState.monitorStartedAt
+      ) {
+        twitchState.seenRedemptions.add(redemption.id);
+        trimSeenRedemptions();
+        continue;
+      }
+
+      twitchState.seenRedemptions.add(redemption.id);
+      trimSeenRedemptions();
+
+      appendSoundEffectRedemptionLogLine(
+        redemption.user_name,
+        soundReward.title,
+      );
+      broadcastJson({
+        type: "sound_effect",
+        rewardId: soundReward.id,
+        rewardName: soundReward.title,
+        userName: redemption.user_name,
+        audioUrl: soundReward.audioPath,
+        volume: parseVolume(soundReward.volume, 0.8),
+      });
+    }
   }
 }
 
@@ -1361,6 +1635,8 @@ async function pollTwitchRedemptions() {
         itemName: drawnItem?.name,
       });
     }
+
+    await processSoundEffectRedemptions(config);
   } catch (err) {
     twitchState.lastError = err instanceof Error ? err.message : String(err);
     console.error(`[TWITCH] erro no polling: ${twitchState.lastError}`);
@@ -1406,6 +1682,23 @@ function startTwitchMonitor(config) {
   );
 
   pollTwitchRedemptions();
+}
+
+function buildApiTwitchConfig() {
+  const cached = loadCachedAuth();
+  const credentials = getClientCredentials();
+
+  return {
+    clientId: String(credentials.clientId || "").trim(),
+    broadcasterId: String(cached?.broadcasterId || "").trim(),
+    accessToken: String(cached?.accessToken || "").trim(),
+    chatSenderId: String(
+      TWITCH_BOT_USER_ID || cached?.broadcasterId || "",
+    ).trim(),
+    chatAccessToken: String(
+      TWITCH_BOT_ACCESS_TOKEN || cached?.accessToken || "",
+    ).trim(),
+  };
 }
 
 async function handleApiRoutes(req, res, cleanPath) {
@@ -1641,13 +1934,329 @@ async function handleApiRoutes(req, res, cleanPath) {
     }
   }
 
+  if (cleanPath === "/api/sound-effects" && req.method === "GET") {
+    const effects = getCreatedRewardsByType(SOUND_EFFECT_REWARD_TYPE).map(
+      normalizeSoundEffectEntry,
+    );
+    const redemptions = loadRedemptionsLogEntries(SOUND_EFFECT_REWARD_TYPE);
+
+    sendJson(res, 200, {
+      ok: true,
+      effects,
+      redemptions,
+      volume:
+        effects.length > 0
+          ? parseVolume(effects[0].volume, 0.8)
+          : parseVolume(0.8, 0.8),
+    });
+    return true;
+  }
+
+  if (
+    cleanPath === "/api/sound-effects/redemptions-log" &&
+    req.method === "GET"
+  ) {
+    sendJson(res, 200, {
+      ok: true,
+      entries: loadRedemptionsLogEntries(SOUND_EFFECT_REWARD_TYPE),
+    });
+    return true;
+  }
+
+  if (cleanPath === "/api/sound-effects/add" && req.method === "POST") {
+    try {
+      const config = buildApiTwitchConfig();
+      if (!config.clientId || !config.broadcasterId || !config.accessToken) {
+        sendJson(res, 400, {
+          ok: false,
+          message: "Conecte com a Twitch antes de criar efeito sonoro",
+        });
+        return true;
+      }
+
+      const body = await readJsonBody(req);
+      const title = String(body?.title || "Novo Efeito Sonoro").trim();
+      const rewardsUrl = new URL(
+        "https://api.twitch.tv/helix/channel_points/custom_rewards",
+      );
+      rewardsUrl.searchParams.set("broadcaster_id", config.broadcasterId);
+
+      const createdData = await twitchApiRequest(
+        rewardsUrl.toString(),
+        config,
+        {
+          method: "POST",
+          body: {
+            title,
+            prompt: "Toca um efeito sonoro no overlay",
+            cost: parseRewardCost(body?.cost, DEFAULT_REWARD_COST),
+            background_color: parseRewardColor(
+              body?.color,
+              DEFAULT_REWARD_COLOR,
+            ),
+            is_enabled: parseRewardEnabled(
+              body?.isEnabled,
+              DEFAULT_REWARD_ENABLED,
+            ),
+            is_user_input_required: false,
+          },
+        },
+      );
+
+      const created = Array.isArray(createdData.data)
+        ? createdData.data[0]
+        : null;
+      if (!created || !created.id) {
+        throw new Error("Nao foi possivel criar o sound effect");
+      }
+
+      upsertCreatedRewardEntry({
+        id: created.id,
+        title: created.title,
+        type: SOUND_EFFECT_REWARD_TYPE,
+        managedBy: "system",
+        broadcasterId: config.broadcasterId,
+        cost: parseRewardCost(created.cost, DEFAULT_REWARD_COST),
+        color: parseRewardColor(created.background_color, DEFAULT_REWARD_COLOR),
+        isEnabled: parseRewardEnabled(
+          created.is_enabled,
+          DEFAULT_REWARD_ENABLED,
+        ),
+        prompt: String(created.prompt || "Toca um efeito sonoro no overlay"),
+        audioPath: "",
+        volume: parseVolume(body?.volume, 0.8),
+      });
+
+      sendJson(res, 200, {
+        ok: true,
+        effect: normalizeSoundEffectEntry({
+          id: created.id,
+          title: created.title,
+          type: SOUND_EFFECT_REWARD_TYPE,
+          managedBy: "system",
+          broadcasterId: config.broadcasterId,
+          cost: created.cost,
+          color: created.background_color,
+          isEnabled: created.is_enabled,
+          prompt: created.prompt,
+          audioPath: "",
+          volume: parseVolume(body?.volume, 0.8),
+        }),
+      });
+      return true;
+    } catch (err) {
+      sendJson(res, 400, {
+        ok: false,
+        message:
+          err instanceof Error ? err.message : "Erro ao criar sound effect",
+      });
+      return true;
+    }
+  }
+
+  if (cleanPath === "/api/sound-effects/update" && req.method === "POST") {
+    try {
+      const body = await readJsonBody(req);
+      const effectId = String(body?.id || "").trim();
+      if (!effectId) {
+        sendJson(res, 400, { ok: false, message: "Informe o id do efeito" });
+        return true;
+      }
+
+      const config = buildApiTwitchConfig();
+      if (!config.clientId || !config.broadcasterId || !config.accessToken) {
+        sendJson(res, 400, {
+          ok: false,
+          message: "Conecte com a Twitch antes de atualizar efeito sonoro",
+        });
+        return true;
+      }
+
+      const existing = normalizeSoundEffectEntry(
+        getCreatedRewardsByType(SOUND_EFFECT_REWARD_TYPE).find(
+          (effect) => String(effect?.id || "").trim() === effectId,
+        ),
+      );
+
+      if (!existing.id) {
+        sendJson(res, 404, { ok: false, message: "Efeito nao encontrado" });
+        return true;
+      }
+
+      const updatedReward = await updateRewardById(config, effectId, {
+        title: String(body?.title || existing.title || "").trim(),
+        cost: parseRewardCost(body?.cost, existing.cost),
+        color: parseRewardColor(body?.color, existing.color),
+        isEnabled: parseRewardEnabled(body?.isEnabled, existing.isEnabled),
+      });
+
+      const updatedEntry = {
+        ...existing,
+        id: updatedReward.id,
+        title: updatedReward.title,
+        cost: parseRewardCost(updatedReward.cost, existing.cost),
+        color: parseRewardColor(updatedReward.background_color, existing.color),
+        isEnabled: parseRewardEnabled(
+          updatedReward.is_enabled,
+          existing.isEnabled,
+        ),
+        volume: parseVolume(body?.volume, existing.volume),
+      };
+      upsertCreatedRewardEntry(updatedEntry);
+
+      sendJson(res, 200, {
+        ok: true,
+        effect: normalizeSoundEffectEntry(updatedEntry),
+      });
+      return true;
+    } catch (err) {
+      sendJson(res, 400, {
+        ok: false,
+        message:
+          err instanceof Error ? err.message : "Erro ao atualizar sound effect",
+      });
+      return true;
+    }
+  }
+
+  if (cleanPath === "/api/sound-effects/upload" && req.method === "POST") {
+    try {
+      const body = await readJsonBody(req);
+      const effectId = String(body?.id || "").trim();
+      if (!effectId) {
+        sendJson(res, 400, { ok: false, message: "Informe o id do efeito" });
+        return true;
+      }
+
+      const effect = normalizeSoundEffectEntry(
+        getCreatedRewardsByType(SOUND_EFFECT_REWARD_TYPE).find(
+          (entry) => String(entry?.id || "").trim() === effectId,
+        ),
+      );
+      if (!effect.id) {
+        sendJson(res, 404, { ok: false, message: "Efeito nao encontrado" });
+        return true;
+      }
+
+      const { ext, buffer } = parseDataUrlAudio(body?.audioDataUrl);
+      ensureRuntimeDirs();
+
+      const safeName =
+        effect.title
+          .normalize("NFD")
+          .replace(/[\u0300-\u036f]/g, "")
+          .replace(/[^a-zA-Z0-9_-]+/g, "-")
+          .replace(/^-+|-+$/g, "")
+          .toLowerCase() || "sound-effect";
+
+      const fileName = `${Date.now()}-${safeName}.${ext}`;
+      const absolutePath = path.join(SOUND_EFFECTS_UPLOAD_DIR, fileName);
+      fs.writeFileSync(absolutePath, buffer);
+
+      const relativePath = `/audio/effects/${fileName}`;
+      const next = {
+        ...effect,
+        audioPath: relativePath,
+      };
+      upsertCreatedRewardEntry(next);
+
+      sendJson(res, 200, {
+        ok: true,
+        effect: normalizeSoundEffectEntry(next),
+      });
+      return true;
+    } catch (err) {
+      sendJson(res, 400, {
+        ok: false,
+        message: err instanceof Error ? err.message : "Erro ao importar audio",
+      });
+      return true;
+    }
+  }
+
+  if (cleanPath === "/api/sound-effects/volume" && req.method === "POST") {
+    try {
+      const body = await readJsonBody(req);
+      const volume = parseVolume(body?.volume, 0.8);
+      const current = getCreatedRewardsByType(SOUND_EFFECT_REWARD_TYPE).map(
+        normalizeSoundEffectEntry,
+      );
+
+      current.forEach((effect) => {
+        upsertCreatedRewardEntry({ ...effect, volume });
+      });
+
+      sendJson(res, 200, { ok: true, volume });
+      return true;
+    } catch (err) {
+      sendJson(res, 400, {
+        ok: false,
+        message:
+          err instanceof Error ? err.message : "Erro ao atualizar volume",
+      });
+      return true;
+    }
+  }
+
+  if (cleanPath === "/api/sound-effects/delete" && req.method === "POST") {
+    try {
+      const body = await readJsonBody(req);
+      const effectId = String(body?.id || "").trim();
+      if (!effectId) {
+        sendJson(res, 400, { ok: false, message: "Informe o id do efeito" });
+        return true;
+      }
+
+      const effect = normalizeSoundEffectEntry(
+        getCreatedRewardsByType(SOUND_EFFECT_REWARD_TYPE).find(
+          (entry) => String(entry?.id || "").trim() === effectId,
+        ),
+      );
+
+      const config = buildApiTwitchConfig();
+      if (
+        effect.id &&
+        config.clientId &&
+        config.broadcasterId &&
+        config.accessToken
+      ) {
+        await deleteRewardById(config, effect.id);
+      }
+
+      if (effect.audioPath && effect.audioPath.startsWith("/audio/effects/")) {
+        const absolutePath = path.resolve(
+          SOUND_EFFECTS_UPLOAD_DIR,
+          effect.audioPath.slice("/audio/effects/".length),
+        );
+        if (
+          absolutePath.startsWith(path.resolve(SOUND_EFFECTS_UPLOAD_DIR)) &&
+          fs.existsSync(absolutePath)
+        ) {
+          fs.unlinkSync(absolutePath);
+        }
+      }
+
+      removeCreatedRewardEntryById(effectId);
+
+      sendJson(res, 200, { ok: true });
+      return true;
+    } catch (err) {
+      sendJson(res, 400, {
+        ok: false,
+        message:
+          err instanceof Error ? err.message : "Erro ao excluir sound effect",
+      });
+      return true;
+    }
+  }
+
   if (cleanPath === "/api/twitch/status" && req.method === "GET") {
     sendJson(res, 200, getSafeTwitchStatus());
     return true;
   }
 
   if (cleanPath === "/api/twitch/redemptions-log" && req.method === "GET") {
-    const entries = loadRedemptionsLogEntries();
+    const entries = loadRedemptionsLogEntries(GACHAPON_REWARD_TYPE);
     sendJson(res, 200, {
       ok: true,
       count: entries.length,
@@ -1972,6 +2581,12 @@ function getContentType(filePath) {
     return "image/jpeg";
   if (filePath.endsWith(".webp")) return "image/webp";
   if (filePath.endsWith(".gif")) return "image/gif";
+  if (filePath.endsWith(".mp3")) return "audio/mpeg";
+  if (filePath.endsWith(".wav")) return "audio/wav";
+  if (filePath.endsWith(".ogg")) return "audio/ogg";
+  if (filePath.endsWith(".webm")) return "audio/webm";
+  if (filePath.endsWith(".m4a")) return "audio/mp4";
+  if (filePath.endsWith(".aac")) return "audio/aac";
   return "text/plain; charset=utf-8";
 }
 
@@ -2027,6 +2642,30 @@ const server = http.createServer((req, res) => {
       }
 
       res.writeHead(200, { "Content-Type": getContentType(assetPath) });
+      res.end(data);
+    });
+    return;
+  }
+
+  if (cleanPath.startsWith("/audio/")) {
+    const relativeAssetPath = cleanPath.slice("/audio/".length);
+    const runtimeAssetPath = path.resolve(RUNTIME_AUDIO_DIR, relativeAssetPath);
+    const runtimeAudioRoot = path.resolve(RUNTIME_AUDIO_DIR);
+
+    if (!runtimeAssetPath.startsWith(runtimeAudioRoot)) {
+      res.writeHead(403, { "Content-Type": "text/plain; charset=utf-8" });
+      res.end("Acesso negado");
+      return;
+    }
+
+    fs.readFile(runtimeAssetPath, (err, data) => {
+      if (err) {
+        res.writeHead(404, { "Content-Type": "text/plain; charset=utf-8" });
+        res.end("Arquivo nao encontrado");
+        return;
+      }
+
+      res.writeHead(200, { "Content-Type": getContentType(runtimeAssetPath) });
       res.end(data);
     });
     return;

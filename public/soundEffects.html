@@ -1,0 +1,445 @@
+<!doctype html>
+<html lang="pt-BR">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>Efeitos Sonoros</title>
+    <link rel="stylesheet" href="/styles/general.css" />
+    <link rel="stylesheet" href="/styles/soundEffects.css" />
+    <script src="/components/navbar/navbar-loader.js" defer></script>
+  </head>
+  <body>
+    <div id="navbarMount"></div>
+
+    <main class="wrap">
+      <section class="panel">
+        <div class="header-row">
+          <h1>Efeitos Sonoros</h1>
+          <button id="btnAddEffect" class="btn-circle" title="Adicionar efeito">
+            +
+          </button>
+        </div>
+
+        <p class="subtitle">
+          Gerencie resgates do tipo soundEffect: nome, cor, custo, audio, status
+          e volume.
+        </p>
+
+        <div id="effectsList" class="effects-list"></div>
+
+        <section class="logs-section">
+          <h2>Resgates soundEffect realizados</h2>
+          <div class="redemptions-box">
+            <ul id="redemptionsList" class="redemptions-list">
+              <li class="empty">Carregando...</li>
+            </ul>
+          </div>
+        </section>
+      </section>
+    </main>
+
+    <script>
+      const effectsListEl = document.getElementById("effectsList");
+      const redemptionsListEl = document.getElementById("redemptionsList");
+      const btnAddEffect = document.getElementById("btnAddEffect");
+
+      const SAVE_DELAY_MS = 10000;
+      const REFRESH_INTERVAL_MS = 4000;
+      const MAX_AUDIO_BYTES = 10 * 1024 * 1024;
+      let effectsState = [];
+      const editingEffects = new Set();
+      let pendingRefreshAfterEdit = false;
+
+      function beginEditing(effectId) {
+        if (!effectId) return;
+        editingEffects.add(effectId);
+      }
+
+      function endEditing(effectId) {
+        if (!effectId) return;
+        editingEffects.delete(effectId);
+
+        if (editingEffects.size === 0 && pendingRefreshAfterEdit) {
+          pendingRefreshAfterEdit = false;
+          refreshData().catch(() => {});
+        }
+      }
+
+      function hasAnyEditingInProgress() {
+        return editingEffects.size > 0;
+      }
+
+      function clampVolume(percent) {
+        const value = Number.parseInt(String(percent ?? "0"), 10);
+        if (!Number.isFinite(value)) return 80;
+        return Math.min(Math.max(value, 0), 100);
+      }
+
+      async function postJson(url, payload) {
+        const res = await fetch(url, {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify(payload || {}),
+        });
+
+        const data = await res.json();
+        if (!res.ok || data.ok === false) {
+          throw new Error(data.message || "Falha na requisicao");
+        }
+
+        return data;
+      }
+
+      async function saveEffect(effectId, options = {}) {
+        const includeRefresh = options.includeRefresh !== false;
+        const card = effectsListEl.querySelector(
+          `[data-effect-id="${effectId}"]`,
+        );
+        if (!card) return;
+
+        const titleInput = card.querySelector("[data-field='title']");
+        const costInput = card.querySelector("[data-field='cost']");
+        const colorInput = card.querySelector("[data-field='color']");
+        const enabledInput = card.querySelector("[data-field='enabled']");
+        const volumeInput = card.querySelector("[data-field='volume']");
+
+        const title = String(titleInput?.value || "").trim();
+        if (!title) {
+          card.querySelector(".hint").textContent = "Nome invalido";
+          return;
+        }
+
+        await postJson("/api/sound-effects/update", {
+          id: effectId,
+          title,
+          cost: costInput?.value,
+          color: colorInput?.value,
+          isEnabled: Boolean(enabledInput?.checked),
+          volume: clampVolume(volumeInput?.value) / 100,
+        });
+
+        card.querySelector(".hint").textContent = "Salvo";
+        if (includeRefresh) {
+          await refreshData();
+        }
+      }
+
+      async function handleUpload(effectId, file) {
+        if (!file) return;
+
+        if (!file.type.startsWith("audio/")) {
+          alert("Selecione um arquivo de audio valido.");
+          return;
+        }
+
+        if (file.size > MAX_AUDIO_BYTES) {
+          alert("Arquivo muito grande (maximo 10MB).");
+          return;
+        }
+
+        const dataUrl = await new Promise((resolve, reject) => {
+          const reader = new FileReader();
+          reader.onload = () => resolve(String(reader.result || ""));
+          reader.onerror = () => reject(new Error("Falha ao ler audio"));
+          reader.readAsDataURL(file);
+        });
+
+        await postJson("/api/sound-effects/upload", {
+          id: effectId,
+          audioDataUrl: dataUrl,
+        });
+
+        await refreshData();
+      }
+
+      async function deleteEffect(effectId) {
+        await postJson("/api/sound-effects/delete", { id: effectId });
+        await refreshData();
+      }
+
+      function renderRedemptions(entries) {
+        if (!Array.isArray(entries) || entries.length === 0) {
+          redemptionsListEl.innerHTML =
+            '<li class="empty">Nenhum resgate registrado.</li>';
+          return;
+        }
+
+        redemptionsListEl.innerHTML = entries
+          .map((entry) => {
+            const date = String(entry?.date || "");
+            const time = String(entry?.time || "");
+            const user = String(entry?.user || "desconhecido");
+            const item = String(entry?.item || "desconhecido");
+            return `<li>${date} ${time} ${user} - ${item}</li>`;
+          })
+          .join("");
+      }
+
+      function createEffectCard(effect) {
+        const id = String(effect.id || "").trim();
+        const card = document.createElement("article");
+        card.className = "effect-card";
+        card.dataset.effectId = id;
+
+        const audioName = effect.audioPath
+          ? String(effect.audioPath).split("/").pop()
+          : "Nenhum audio importado";
+        const volumePercent = clampVolume(
+          Math.round(Number(effect.volume || 0.8) * 100),
+        );
+
+        card.innerHTML = `
+          <div class="card-grid">
+            <div>
+                <label>Nome</label>
+                <input data-field="title" type="text" value="${String(effect.title || "").replace(/"/g, "&quot;")}" />
+            </div>
+            <div>
+                <label>Pontos</label>
+                <input data-field="cost" type="number" min="1" step="1" value="${Number(effect.cost || 1)}" />
+            </div>
+            <div>
+                <label>Cor</label>
+                <input data-field="color" type="color" value="${String(effect.color || "#9147FF")}" />
+            </div>
+            <div class="volume-field" aria-label="Volume do efeito">
+              <label>Volume</label>
+              <div class="inline-volume">
+                <input data-field="volume" type="range" min="0" max="100" step="1" value="${volumePercent}" />
+                <span data-field="volumeText">${volumePercent}%</span>
+              </div>
+            </div>
+            <div class="toggle-box">
+                <label>Status</label>
+                <label class="switch">
+                    <input data-field="enabled" type="checkbox" ${effect.isEnabled ? "checked" : ""} />
+                    <span class="slider"></span>
+                </label>
+            </div>
+          </div>
+
+          <div class="effect-progress-wrap">
+            <div class="effect-progress-bar">
+              <div class="effect-progress-fill" data-field="progressFill"></div>
+            </div>
+            <div class="effect-progress-text" data-field="progressText">
+              Digite para agendar atualizacao em 10s
+            </div>
+          </div>
+
+          <div class="actions-row">
+            <label class="upload-btn">
+              Importar audio
+              <input data-field="audio" type="file" accept="audio/*" hidden />
+            </label>
+            <span class="audio-name">${audioName}</span>
+            <button class="danger" data-action="delete">Excluir</button>
+          </div>
+
+          <div class="hint">Aguardando alteracoes...</div>
+        `;
+
+        const titleInput = card.querySelector("[data-field='title']");
+        const costInput = card.querySelector("[data-field='cost']");
+        const colorInput = card.querySelector("[data-field='color']");
+        const enabledInput = card.querySelector("[data-field='enabled']");
+        const volumeInput = card.querySelector("[data-field='volume']");
+        const volumeText = card.querySelector("[data-field='volumeText']");
+        const progressFill = card.querySelector("[data-field='progressFill']");
+        const progressText = card.querySelector("[data-field='progressText']");
+        const audioInput = card.querySelector("[data-field='audio']");
+        const deleteBtn = card.querySelector("[data-action='delete']");
+
+        let applyTimeoutId = null;
+        let progressIntervalId = null;
+        let countdownStartedAt = 0;
+        let volumeSaveTimeoutId = null;
+
+        function clearCardTimers() {
+          if (applyTimeoutId) {
+            clearTimeout(applyTimeoutId);
+            applyTimeoutId = null;
+          }
+
+          if (progressIntervalId) {
+            clearInterval(progressIntervalId);
+            progressIntervalId = null;
+          }
+        }
+
+        function renderCardProgress(percent, text) {
+          const clamped = Math.max(0, Math.min(100, percent));
+          progressFill.style.width = `${clamped}%`;
+          progressText.textContent = text;
+        }
+
+        function scheduleCardConfigSave() {
+          beginEditing(id);
+          clearCardTimers();
+          countdownStartedAt = Date.now();
+
+          renderCardProgress(0, "Aguardando 10s sem alterar para salvar...");
+
+          progressIntervalId = setInterval(() => {
+            const elapsed = Date.now() - countdownStartedAt;
+            const percent = (elapsed / SAVE_DELAY_MS) * 100;
+            const remainingSec = Math.max(
+              0,
+              Math.ceil((SAVE_DELAY_MS - elapsed) / 1000),
+            );
+
+            renderCardProgress(
+              percent,
+              `Aplicando em ${remainingSec}s se nao houver nova alteracao`,
+            );
+          }, 100);
+
+          applyTimeoutId = setTimeout(async () => {
+            try {
+              renderCardProgress(100, "Aplicando alteracoes...");
+              await saveEffect(id);
+              clearCardTimers();
+              renderCardProgress(0, "Atualizado. Digite para nova alteracao");
+            } catch (err) {
+              clearCardTimers();
+              renderCardProgress(0, `Falha ao salvar: ${err.message}`);
+            } finally {
+              endEditing(id);
+            }
+          }, SAVE_DELAY_MS);
+        }
+
+        async function saveVolumeImmediately() {
+          beginEditing(id);
+
+          if (volumeText) {
+            volumeText.textContent = `${clampVolume(volumeInput.value)}%`;
+          }
+
+          if (volumeSaveTimeoutId) {
+            clearTimeout(volumeSaveTimeoutId);
+          }
+
+          volumeSaveTimeoutId = setTimeout(async () => {
+            try {
+              card.querySelector(".hint").textContent = "Salvando volume...";
+              await saveEffect(id, { includeRefresh: false });
+              card.querySelector(".hint").textContent = "Volume salvo";
+            } catch (err) {
+              card.querySelector(".hint").textContent = `Erro: ${err.message}`;
+            } finally {
+              endEditing(id);
+            }
+          }, 120);
+        }
+
+        [titleInput, costInput, colorInput].forEach((input) => {
+          input.addEventListener("input", () => {
+            card.querySelector(".hint").textContent =
+              "Alterado. Salvando em 10 segundos...";
+            scheduleCardConfigSave();
+          });
+        });
+
+        volumeInput.addEventListener("input", () => {
+          saveVolumeImmediately();
+        });
+
+        enabledInput.addEventListener("change", async () => {
+          beginEditing(id);
+          card.querySelector(".hint").textContent = "Salvando status...";
+          try {
+            await saveEffect(id);
+          } catch (err) {
+            card.querySelector(".hint").textContent = `Erro: ${err.message}`;
+          } finally {
+            endEditing(id);
+          }
+        });
+
+        audioInput.addEventListener("change", async () => {
+          beginEditing(id);
+          const [file] = audioInput.files || [];
+          audioInput.value = "";
+          try {
+            card.querySelector(".hint").textContent = "Enviando audio...";
+            await handleUpload(id, file);
+            card.querySelector(".hint").textContent = "Audio salvo";
+          } catch (err) {
+            card.querySelector(".hint").textContent = `Erro: ${err.message}`;
+          } finally {
+            endEditing(id);
+          }
+        });
+
+        deleteBtn.addEventListener("click", async () => {
+          if (!confirm("Excluir este resgate de efeito sonoro?")) return;
+          beginEditing(id);
+          try {
+            clearCardTimers();
+            await deleteEffect(id);
+          } catch (err) {
+            card.querySelector(".hint").textContent = `Erro: ${err.message}`;
+          } finally {
+            endEditing(id);
+          }
+        });
+
+        return card;
+      }
+
+      function renderEffects(effects) {
+        effectsListEl.innerHTML = "";
+
+        if (!effects.length) {
+          effectsListEl.innerHTML =
+            '<div class="empty-card">Nenhum efeito sonoro criado. Clique no + para adicionar.</div>';
+          return;
+        }
+
+        effects.forEach((effect) => {
+          effectsListEl.appendChild(createEffectCard(effect));
+        });
+      }
+
+      async function refreshData() {
+        if (hasAnyEditingInProgress()) {
+          pendingRefreshAfterEdit = true;
+          return;
+        }
+
+        const res = await fetch("/api/sound-effects", { cache: "no-store" });
+        const data = await res.json();
+        if (!res.ok || data.ok === false) {
+          throw new Error(data.message || "Falha ao carregar efeitos sonoros");
+        }
+
+        effectsState = Array.isArray(data.effects) ? data.effects : [];
+        renderEffects(effectsState);
+        renderRedemptions(
+          Array.isArray(data.redemptions) ? data.redemptions : [],
+        );
+      }
+
+      btnAddEffect.addEventListener("click", async () => {
+        beginEditing("__adding__");
+        try {
+          await postJson("/api/sound-effects/add", {});
+          await refreshData();
+        } catch (err) {
+          alert(err.message);
+        } finally {
+          endEditing("__adding__");
+        }
+      });
+
+      refreshData().catch((err) => {
+        effectsListEl.innerHTML = `<div class="empty-card">Erro: ${err.message}</div>`;
+      });
+
+      setInterval(() => {
+        refreshData().catch(() => {});
+      }, REFRESH_INTERVAL_MS);
+    </script>
+  </body>
+</html>

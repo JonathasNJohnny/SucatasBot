@@ -14,10 +14,7 @@
     <main class="wrap">
       <section class="panel">
         <h1>ImportItems</h1>
-        <p>
-          Cadastre os itens manualmente com nome, porcentagem e foto. Os dados
-          ficam salvos em importedItems.txt (formato JSON) no servidor.
-        </p>
+        <p>Cadastre os itens manualmente com nome, porcentagem e foto.</p>
 
         <div class="form-grid">
           <div class="field">
@@ -69,7 +66,7 @@
       const itemChanceEl = document.getElementById("itemChance");
       const itemImageEl = document.getElementById("itemImage");
       const quickImportImagesEl = document.getElementById("quickImportImages");
-      const AUTO_SAVE_CHANCE_DELAY_MS = 700;
+      const AUTO_SAVE_ITEM_DELAY_MS = 2000;
 
       function fileToDataUrl(file) {
         return new Promise((resolve, reject) => {
@@ -229,20 +226,41 @@
           </div>
 
           <div class="actions">
-            <button class="ok btn-save" data-id="${item.id}">Salvar alteracoes</button>
+            <span class="item-save-state" data-role="saveState">Aguardando alteracoes</span>
             <button class="ghost-danger btn-delete" data-id="${item.id}" title="Excluir item">&#128465; Excluir</button>
           </div>
         `;
 
-        const saveButton = card.querySelector(".btn-save");
         const deleteButton = card.querySelector(".btn-delete");
+        const saveState = card.querySelector("[data-role='saveState']");
         const nameInput = card.querySelector(".edit-name");
         const chanceInput = card.querySelector(".edit-chance");
         const imageInput = card.querySelector(".edit-image");
         const previewImage = card.querySelector(".item-preview");
         let autoSaveTimeoutId = null;
-        let autoSavingChance = false;
+        let isAutoSaving = false;
+        let hasPendingAutoSave = false;
+        let pendingImageDataUrl = "";
+        let lastSavedName = String(item.name || "");
         let lastSavedChance = Number.parseFloat(String(item.chance));
+
+        function setSaveState(text, type = "idle") {
+          if (!saveState) return;
+          saveState.textContent = text;
+          saveState.classList.remove(
+            "item-save-state-saving",
+            "item-save-state-saved",
+            "item-save-state-error",
+          );
+
+          if (type === "saving") {
+            saveState.classList.add("item-save-state-saving");
+          } else if (type === "saved") {
+            saveState.classList.add("item-save-state-saved");
+          } else if (type === "error") {
+            saveState.classList.add("item-save-state-error");
+          }
+        }
 
         async function updateItem(payload) {
           const res = await fetch("/api/items/update", {
@@ -259,102 +277,121 @@
           return data;
         }
 
-        async function autoSaveChance(force = false) {
-          const parsedChance = parseFloat(String(chanceInput.value));
-
-          if (!Number.isFinite(parsedChance) || parsedChance <= 0) {
-            if (force) {
-              setStatus("Informe uma porcentagem maior que zero.", false);
-            }
+        async function runAutoSave() {
+          if (isAutoSaving) {
+            hasPendingAutoSave = true;
             return;
           }
 
-          if (!force && parsedChance === lastSavedChance) {
+          const name = nameInput.value.trim();
+          const chance = parseFloat(String(chanceInput.value));
+
+          if (!name) {
+            setSaveState("erro: nome invalido", "error");
             return;
           }
 
-          if (autoSavingChance) {
+          if (!Number.isFinite(chance) || chance <= 0) {
+            setSaveState("erro: porcentagem invalida", "error");
             return;
           }
 
-          autoSavingChance = true;
+          const hasImage = Boolean(pendingImageDataUrl);
+          const hasChanges =
+            name !== lastSavedName || chance !== lastSavedChance || hasImage;
+
+          if (!hasChanges) {
+            return;
+          }
+
+          isAutoSaving = true;
+          setSaveState("salvando...", "saving");
 
           try {
-            const data = await updateItem({
-              id: item.id,
-              name: item.name,
-              chance: parsedChance,
-            });
-            lastSavedChance = Number.parseFloat(String(data.item?.chance));
-            item.chance = data.item?.chance;
-            setStatus(`Porcentagem de "${item.name}" atualizada.`, true);
-          } catch (err) {
-            setStatus(err.message || "Erro ao atualizar porcentagem", false);
-          } finally {
-            autoSavingChance = false;
-          }
-        }
-
-        imageInput.addEventListener("change", () => {
-          const file = imageInput.files && imageInput.files[0];
-          if (!file) return;
-          previewImage.src = URL.createObjectURL(file);
-        });
-
-        chanceInput.addEventListener("input", () => {
-          if (autoSaveTimeoutId) {
-            clearTimeout(autoSaveTimeoutId);
-          }
-
-          autoSaveTimeoutId = setTimeout(() => {
-            autoSaveChance();
-          }, AUTO_SAVE_CHANCE_DELAY_MS);
-        });
-
-        chanceInput.addEventListener("blur", () => {
-          if (autoSaveTimeoutId) {
-            clearTimeout(autoSaveTimeoutId);
-            autoSaveTimeoutId = null;
-          }
-          autoSaveChance(true);
-        });
-
-        saveButton.addEventListener("click", async () => {
-          try {
-            const name = nameInput.value.trim();
-            const chance = parseFloat(String(chanceInput.value));
-            const file = imageInput.files && imageInput.files[0];
-
-            if (!name) {
-              throw new Error("Informe o nome do item.");
-            }
-
-            if (!Number.isFinite(chance) || chance <= 0) {
-              throw new Error("Informe uma porcentagem maior que zero.");
-            }
-
             const payload = {
               id: item.id,
               name,
               chance,
             };
 
-            if (file) {
-              payload.imageDataUrl = await fileToDataUrl(file);
+            if (hasImage) {
+              payload.imageDataUrl = pendingImageDataUrl;
             }
 
             const data = await updateItem(payload);
 
             item.name = data.item.name;
             item.chance = data.item.chance;
-            setStatus(`Item "${data.item.name}" atualizado.`, true);
-            await loadItems();
+            lastSavedName = String(data.item.name || "");
+            lastSavedChance = Number.parseFloat(String(data.item.chance));
+            pendingImageDataUrl = "";
+
+            setSaveState("salvo", "saved");
           } catch (err) {
+            setSaveState("erro ao salvar", "error");
             setStatus(err.message || "Erro ao salvar alteracoes", false);
+          } finally {
+            isAutoSaving = false;
+
+            if (hasPendingAutoSave) {
+              hasPendingAutoSave = false;
+              runAutoSave();
+            }
+          }
+        }
+
+        function scheduleAutoSave() {
+          setSaveState("salvando...", "saving");
+
+          if (autoSaveTimeoutId) {
+            clearTimeout(autoSaveTimeoutId);
+          }
+
+          autoSaveTimeoutId = setTimeout(() => {
+            autoSaveTimeoutId = null;
+            runAutoSave();
+          }, AUTO_SAVE_ITEM_DELAY_MS);
+        }
+
+        imageInput.addEventListener("change", async () => {
+          const file = imageInput.files && imageInput.files[0];
+          if (!file) return;
+
+          previewImage.src = URL.createObjectURL(file);
+
+          try {
+            pendingImageDataUrl = await fileToDataUrl(file);
+            scheduleAutoSave();
+          } catch {
+            setSaveState("erro ao ler imagem", "error");
           }
         });
 
+        nameInput.addEventListener("input", () => {
+          scheduleAutoSave();
+        });
+
+        chanceInput.addEventListener("input", () => {
+          scheduleAutoSave();
+        });
+
+        [nameInput, chanceInput].forEach((inputEl) => {
+          inputEl.addEventListener("blur", () => {
+            if (autoSaveTimeoutId) {
+              clearTimeout(autoSaveTimeoutId);
+              autoSaveTimeoutId = null;
+            }
+
+            runAutoSave();
+          });
+        });
+
         deleteButton.addEventListener("click", async () => {
+          if (autoSaveTimeoutId) {
+            clearTimeout(autoSaveTimeoutId);
+            autoSaveTimeoutId = null;
+          }
+
           try {
             const shouldDelete = confirm(
               `Excluir o item \"${item.name}\"? Esta acao nao pode ser desfeita.`,

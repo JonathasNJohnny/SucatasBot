@@ -33,16 +33,10 @@
         packImageData: "",
         cardImageData: "",
       };
-      const DEFAULT_ANIMATION_CONFIG = {
-        packSwingCount: 2,
-        packRevealDelayMs: 1800,
-        cardVisibleMs: 4000,
-      };
       const INITIAL_CARD_CONFIG = {
         style: { ...DEFAULT_CARD_STYLE },
         packLabel: DEFAULT_PACK_LABEL,
         images: { ...EMPTY_IMAGE_STYLE },
-        animation: { ...DEFAULT_ANIMATION_CONFIG },
       };
       const gachaQueue = [];
       let isPlaying = false;
@@ -50,10 +44,12 @@
       const NEXT_PACK_DELAY_MS = 1000;
       const SOCKET_RECONNECT_INITIAL_DELAY_MS = 1000;
       const SOCKET_RECONNECT_MAX_DELAY_MS = 10000;
+      const SOUND_EFFECT_DEFAULT_VOLUME = 0.8;
       let currentCardConfig = { ...INITIAL_CARD_CONFIG };
       let socket = null;
       let socketReconnectDelayMs = SOCKET_RECONNECT_INITIAL_DELAY_MS;
       let socketReconnectTimeoutId = null;
+      const activeSoundPlayers = new Set();
 
       function applyCardStyle(styleConfig) {
         Object.entries(styleConfig).forEach(([cssVar, value]) => {
@@ -68,15 +64,6 @@
           return DEFAULT_PACK_LABEL;
         }
         return value;
-      }
-
-      function sanitizeInt(value, fallback, min, max) {
-        const parsed = Number.parseInt(String(value ?? ""), 10);
-        if (!Number.isFinite(parsed)) {
-          return fallback;
-        }
-
-        return Math.min(Math.max(parsed, min), max);
       }
 
       function sanitizeImageData(value) {
@@ -120,26 +107,6 @@
           images: {
             packImageData: sanitizeImageData(parsed.packImageData),
             cardImageData: sanitizeImageData(parsed.cardImageData),
-          },
-          animation: {
-            packSwingCount: sanitizeInt(
-              parsed.packSwingCount,
-              DEFAULT_ANIMATION_CONFIG.packSwingCount,
-              1,
-              12,
-            ),
-            packRevealDelayMs: sanitizeInt(
-              parsed.packRevealDelayMs,
-              DEFAULT_ANIMATION_CONFIG.packRevealDelayMs,
-              200,
-              15000,
-            ),
-            cardVisibleMs: sanitizeInt(
-              parsed.cardVisibleMs,
-              DEFAULT_ANIMATION_CONFIG.cardVisibleMs,
-              400,
-              30000,
-            ),
           },
         };
       }
@@ -210,6 +177,35 @@
         return new Promise((r) => setTimeout(r, ms));
       }
 
+      function playSoundEffect(audioUrl, volume) {
+        const src = String(audioUrl || "").trim();
+        if (!src) return;
+
+        const parsedVolume = Number.parseFloat(String(volume ?? ""));
+        const safeVolume = Number.isFinite(parsedVolume)
+          ? Math.min(Math.max(parsedVolume, 0), 1)
+          : SOUND_EFFECT_DEFAULT_VOLUME;
+
+        const player = new Audio();
+        player.preload = "auto";
+        player.volume = safeVolume;
+        player.src = src;
+
+        const cleanup = () => {
+          player.onended = null;
+          player.onerror = null;
+          activeSoundPlayers.delete(player);
+        };
+
+        player.onended = cleanup;
+        player.onerror = cleanup;
+        activeSoundPlayers.add(player);
+
+        player.play().catch(() => {
+          cleanup();
+        });
+      }
+
       function handleSocketMessage(event) {
         const data = JSON.parse(event.data);
 
@@ -219,6 +215,11 @@
             drawId: data.drawId || "",
           });
           processQueue();
+          return;
+        }
+
+        if (data.type === "sound_effect") {
+          playSoundEffect(data.audioUrl, data.volume);
         }
       }
 
@@ -325,19 +326,14 @@
         pack.style.transform = "scale(1)";
         pack.style.animation = "none";
         void pack.offsetWidth;
-        const animationConfig =
-          currentCardConfig?.animation || DEFAULT_ANIMATION_CONFIG;
-        const swingCount = animationConfig.packSwingCount;
-        const packRevealDelayMs = animationConfig.packRevealDelayMs;
-        const cardVisibleMs = animationConfig.cardVisibleMs;
-        pack.style.animation = `packSwing 0.9s ease-in-out ${swingCount}`;
+        pack.style.animation = "packSwing 0.9s ease-in-out";
 
-        await sleep(packRevealDelayMs);
+        await sleep(1800);
 
         card.style.transform = "translateY(0) scale(1)";
         card.style.opacity = "1";
 
-        await sleep(cardVisibleMs);
+        await sleep(4000);
 
         // reset
         pack.style.transform = "scale(0)";
