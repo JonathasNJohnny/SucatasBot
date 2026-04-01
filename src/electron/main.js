@@ -24,7 +24,6 @@ let mainWindow = null;
 let tray = null;
 let updateWindow = null;
 let isQuitting = false;
-let lastDownloadedUpdateFilePath = "";
 const hasSingleInstanceLock = app.requestSingleInstanceLock();
 
 // Detecta primeira execução
@@ -230,19 +229,6 @@ function closeUpdateWindow() {
   updateWindow = null;
 }
 
-async function openDownloadedUpdateFolderOnFailure() {
-  if (!lastDownloadedUpdateFilePath) {
-    return;
-  }
-
-  const updateFolder = path.dirname(lastDownloadedUpdateFilePath);
-  const openError = await shell.openPath(updateFolder);
-
-  if (openError) {
-    console.error("Falha ao abrir pasta do arquivo de atualizacao:", openError);
-  }
-}
-
 async function checkForUpdatesBeforeStart(forceDownload = false) {
   // Atualizacao automatica funciona em app empacotado com release publicado.
   if (!app.isPackaged) {
@@ -254,6 +240,8 @@ async function checkForUpdatesBeforeStart(forceDownload = false) {
   autoUpdater.allowPrerelease = false;
   autoUpdater.stageUpdates = true; // Economiza espaço em disco durante updates
 
+  let nextVersion = null;
+
   try {
     const currentVersion = app.getVersion();
     const updateCheckResult = await autoUpdater.checkForUpdates();
@@ -264,7 +252,7 @@ async function checkForUpdatesBeforeStart(forceDownload = false) {
       return false;
     }
 
-    const nextVersion = nextVersionParsed.normalized;
+    nextVersion = nextVersionParsed.normalized;
 
     // Atualiza apenas se a proxima tag/version for superior a atual.
     if (!isRemoteVersionGreater(currentVersion, nextVersion)) {
@@ -289,10 +277,7 @@ async function checkForUpdatesBeforeStart(forceDownload = false) {
       });
 
       autoUpdater.on("download-progress", onDownloadProgress);
-      const downloadedFiles = await autoUpdater.downloadUpdate();
-      lastDownloadedUpdateFilePath = Array.isArray(downloadedFiles)
-        ? String(downloadedFiles[0] || "")
-        : "";
+      await autoUpdater.downloadUpdate();
       autoUpdater.removeListener("download-progress", onDownloadProgress);
       markFirstRunDone();
 
@@ -331,9 +316,6 @@ async function checkForUpdatesBeforeStart(forceDownload = false) {
 
     autoUpdater.on("download-progress", onDownloadProgress);
     const downloadedFiles = await autoUpdater.downloadUpdate();
-    lastDownloadedUpdateFilePath = Array.isArray(downloadedFiles)
-      ? String(downloadedFiles[0] || "")
-      : "";
     autoUpdater.removeListener("download-progress", onDownloadProgress);
 
     setUpdateWindowState({
@@ -351,8 +333,7 @@ async function checkForUpdatesBeforeStart(forceDownload = false) {
 
     setUpdateWindowState({
       title: "Falha na atualizacao",
-      detail:
-        "Nao foi possivel atualizar agora. Vamos abrir o app normalmente.",
+      detail: "Nao foi possivel atualizar agora. Abrindo o download manual...",
       progress: "",
     });
 
@@ -360,7 +341,10 @@ async function checkForUpdatesBeforeStart(forceDownload = false) {
       closeUpdateWindow();
     }, 1800);
 
-    await openDownloadedUpdateFolderOnFailure();
+    if (nextVersion) {
+      const downloadUrl = `https://github.com/JonathasNJohnny/SucatasBot/releases/download/v${nextVersion}/Sucatas-Bot.exe`;
+      await shell.openExternal(downloadUrl);
+    }
 
     return false;
   }
