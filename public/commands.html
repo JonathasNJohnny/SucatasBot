@@ -1,0 +1,881 @@
+<!doctype html>
+<html lang="pt-BR">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>Comandos</title>
+    <link rel="stylesheet" href="/styles/general.css" />
+    <link rel="stylesheet" href="/styles/commands.css" />
+    <script src="/components/navbar/navbar-loader.js" defer></script>
+  </head>
+  <body>
+    <div id="navbarMount"></div>
+
+    <main class="wrap">
+      <section class="panel">
+        <div class="header-row">
+          <h1>Comandos</h1>
+          <div class="header-actions">
+            <button
+              id="btnVariables"
+              class="btn-vars"
+              type="button"
+              title="Ver variaveis"
+            >
+              Variaveis
+            </button>
+            <button
+              id="btnRefreshCommands"
+              class="btn-refresh"
+              type="button"
+              title="Recarregar comandos"
+            >
+              Recarregar
+            </button>
+            <button
+              id="btnAddCommand"
+              class="btn-circle"
+              title="Adicionar comando"
+            >
+              +
+            </button>
+          </div>
+        </div>
+
+        <p class="subtitle">
+          Crie comandos de chat no formato <strong>!nome</strong>.
+        </p>
+
+        <section id="variablesPanel" class="variables-panel" hidden>
+          <label for="variablesHelpText">Variaveis disponiveis</label>
+          <textarea id="variablesHelpText" readonly rows="8">
+${streamer}: nome do streamer/canal.
+${sender}: nome de quem digitou o comando no chat.
+${user}: alvo dinamico (prioridade: @mencao > primeiro argumento > sender).
+${count}: contador do comando (soma +1 apenas se ${count} estiver no texto).
+${script: "..."}: executa JavaScript e usa o return como resultado.
+${api: 'https://...'}: realiza um GET na URL e retorna o texto/JSON da resposta.
+
+Dica:
+- Voce pode usar ${streamer}, ${sender}, ${user} e ${count} dentro de ${api: '...'}.
+- Exemplo: ${api: 'https://api.exemplo.com/user/${sender}'}
+          </textarea>
+        </section>
+
+        <div class="commands-tabs" role="tablist" aria-label="Tipos de comando">
+          <button
+            id="tabSystem"
+            class="tab-btn active"
+            type="button"
+            role="tab"
+            aria-selected="true"
+          >
+            Comandos Padrões
+          </button>
+          <button
+            id="tabPersonalized"
+            class="tab-btn"
+            type="button"
+            role="tab"
+            aria-selected="false"
+          >
+            Comandos Personalizados
+          </button>
+          <button
+            id="tabS2"
+            class="tab-btn"
+            type="button"
+            role="tab"
+            aria-selected="false"
+          >
+            s2
+          </button>
+        </div>
+
+        <div id="commandsList" class="commands-list">
+          <article class="command-card empty-card">
+            Carregando comandos...
+          </article>
+        </div>
+      </section>
+    </main>
+
+    <script>
+      const commandsListEl = document.getElementById("commandsList");
+      const btnAddCommand = document.getElementById("btnAddCommand");
+      const btnVariables = document.getElementById("btnVariables");
+      const btnRefreshCommands = document.getElementById("btnRefreshCommands");
+      const variablesPanel = document.getElementById("variablesPanel");
+      const tabPersonalized = document.getElementById("tabPersonalized");
+      const tabSystem = document.getElementById("tabSystem");
+      const tabS2 = document.getElementById("tabS2");
+
+      let personalizedCommandsState = [];
+      let systemCommandsState = [];
+      let activeTab = "system";
+
+      btnVariables.addEventListener("click", () => {
+        const isHidden = variablesPanel.hasAttribute("hidden");
+        if (isHidden) {
+          variablesPanel.removeAttribute("hidden");
+          btnVariables.classList.add("active");
+        } else {
+          variablesPanel.setAttribute("hidden", "");
+          btnVariables.classList.remove("active");
+        }
+      });
+
+      btnRefreshCommands.addEventListener("click", async () => {
+        const originalText = btnRefreshCommands.textContent;
+        btnRefreshCommands.disabled = true;
+        btnRefreshCommands.textContent = "Recarregando...";
+        try {
+          await refreshCommands();
+        } catch (err) {
+          alert(`Falha ao recarregar comandos: ${err.message}`);
+        } finally {
+          btnRefreshCommands.disabled = false;
+          btnRefreshCommands.textContent = originalText;
+        }
+      });
+
+      async function postJson(url, payload) {
+        const res = await fetch(url, {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify(payload || {}),
+        });
+
+        const data = await res.json();
+        if (!res.ok || data.ok === false) {
+          throw new Error(data.message || "Falha na requisicao");
+        }
+
+        return data;
+      }
+
+      function normalizeName(name) {
+        return String(name || "")
+          .trim()
+          .replace(/^!+/, "")
+          .normalize("NFD")
+          .replace(/[\u0300-\u036f]/g, "")
+          .toLowerCase();
+      }
+
+      function sanitizeCommandNameInput(name) {
+        return normalizeName(name).replace(/[^a-z0-9_]+/g, "");
+      }
+
+      function parseAliasInput(rawValue, commandName) {
+        const normalizedName = sanitizeCommandNameInput(commandName);
+        const tokens = String(rawValue || "")
+          .split(/\s+/)
+          .filter(Boolean)
+          .map((token) => sanitizeCommandNameInput(token))
+          .filter(Boolean);
+
+        const unique = [];
+        const seen = new Set([normalizedName]);
+
+        for (const token of tokens) {
+          if (token === normalizedName || seen.has(token)) {
+            continue;
+          }
+          seen.add(token);
+          unique.push(token);
+        }
+
+        return unique;
+      }
+
+      function buildAliasInputValue(commandName, aliases) {
+        const normalizedName = sanitizeCommandNameInput(commandName);
+        const normalizedAliases = Array.isArray(aliases)
+          ? aliases
+              .map((alias) => sanitizeCommandNameInput(alias))
+              .filter(Boolean)
+              .filter((alias) => alias !== normalizedName)
+          : [];
+
+        return normalizedAliases.join(" ").trim();
+      }
+
+      function escapeHtml(value) {
+        return String(value || "")
+          .replace(/&/g, "&amp;")
+          .replace(/</g, "&lt;")
+          .replace(/"/g, "&quot;");
+      }
+
+      function escapeTextarea(value) {
+        return String(value || "")
+          .replace(/&/g, "&amp;")
+          .replace(/</g, "&lt;");
+      }
+
+      function fileToDataUrl(file) {
+        return new Promise((resolve, reject) => {
+          const reader = new FileReader();
+          reader.onload = () => resolve(String(reader.result || ""));
+          reader.onerror = () => reject(new Error("Falha ao ler imagem"));
+          reader.readAsDataURL(file);
+        });
+      }
+
+      function nextCommandName() {
+        let index = personalizedCommandsState.length + 1;
+        while (true) {
+          const candidate = `comando${index}`;
+          if (
+            !personalizedCommandsState.some(
+              (command) => command.name === candidate,
+            )
+          ) {
+            return candidate;
+          }
+          index += 1;
+        }
+      }
+
+      function setActiveTab(tab) {
+        activeTab = ["system", "personalized", "s2"].includes(tab)
+          ? tab
+          : "system";
+
+        const isSystem = activeTab === "system";
+        const isPersonalized = activeTab === "personalized";
+        const isS2 = activeTab === "s2";
+
+        tabSystem.classList.toggle("active", isSystem);
+        tabSystem.setAttribute("aria-selected", isSystem ? "true" : "false");
+        tabPersonalized.classList.toggle("active", isPersonalized);
+        tabPersonalized.setAttribute(
+          "aria-selected",
+          isPersonalized ? "true" : "false",
+        );
+        tabS2.classList.toggle("active", isS2);
+        tabS2.setAttribute("aria-selected", isS2 ? "true" : "false");
+
+        btnAddCommand.disabled = !isPersonalized;
+        btnAddCommand.title = !isPersonalized
+          ? "Comandos padroes nao sao criados manualmente"
+          : "Adicionar comando";
+      }
+
+      async function refreshCommands() {
+        const res = await fetch("/api/commands", { cache: "no-store" });
+        const data = await res.json();
+        if (!res.ok || data.ok === false) {
+          throw new Error(data.message || "Falha ao carregar comandos");
+        }
+
+        personalizedCommandsState = Array.isArray(data.personalizedCommands)
+          ? data.personalizedCommands
+          : Array.isArray(data.commands)
+            ? data.commands
+            : [];
+
+        systemCommandsState = Array.isArray(data.systemCommands)
+          ? data.systemCommands
+          : [];
+
+        renderCommands();
+      }
+
+      function renderCommands() {
+        if (activeTab === "system") {
+          const regularSystemCommands = systemCommandsState.filter(
+            (command) => String(command?.key || "").trim() !== "s2",
+          );
+
+          if (!regularSystemCommands.length) {
+            commandsListEl.innerHTML =
+              '<article class="command-card empty-card">Nenhum comando padrao disponivel.</article>';
+            return;
+          }
+
+          commandsListEl.innerHTML = "";
+          regularSystemCommands.forEach((command) => {
+            commandsListEl.appendChild(createSystemCommandCard(command));
+          });
+          return;
+        }
+
+        if (activeTab === "s2") {
+          const s2Command =
+            systemCommandsState.find(
+              (command) => String(command?.key || "").trim() === "s2",
+            ) || null;
+
+          if (!s2Command) {
+            commandsListEl.innerHTML =
+              '<article class="command-card empty-card">Comando padrao s2 nao encontrado.</article>';
+            return;
+          }
+
+          commandsListEl.innerHTML = "";
+          commandsListEl.appendChild(createSystemCommandCard(s2Command));
+          return;
+        }
+
+        if (!personalizedCommandsState.length) {
+          commandsListEl.innerHTML =
+            '<article class="command-card empty-card">Nenhum comando personalizado criado.</article>';
+          return;
+        }
+
+        commandsListEl.innerHTML = "";
+        personalizedCommandsState.forEach((command) => {
+          commandsListEl.appendChild(createCommandCard(command));
+        });
+      }
+
+      function createSystemCommandCard(command) {
+        const key = String(command.key || "").trim();
+        const card = document.createElement("article");
+        card.className = "command-card system-card";
+
+        card.innerHTML = `
+          <div class="command-top-row">
+            <div class="command-grid">
+              <div>
+                <label>Comando padrao</label>
+                <div class="name-prefix-wrap">
+                  <span class="command-prefix">!</span>
+                  <input data-field="name" type="text" value="${String(command.name || "").replace(/"/g, "&quot;")}" readonly />
+                </div>
+              </div>
+
+              <div class="toggle-box">
+                <label>Status</label>
+                <label class="switch">
+                  <input data-field="enabled" type="checkbox" ${command.enabled ? "checked" : ""} />
+                  <span class="slider"></span>
+                </label>
+              </div>
+            </div>
+
+            <button class="expand-toggle" data-action="toggle-details" type="button" aria-label="Mostrar detalhes" aria-expanded="false" title="Mostrar detalhes">▾</button>
+          </div>
+
+          <div class="command-details" data-section="details" hidden>
+            <div>
+              <label>Alias</label>
+              <input data-field="aliases" type="text" value="${buildAliasInputValue(command.name, command.aliases).replace(/"/g, "&quot;")}" placeholder="alias1 alias2 alias3" />
+            </div>
+
+            <div>
+              <label>Resposta do comando</label>
+              ${
+                command.allowCustomText
+                  ? `<textarea data-field="text" rows="4" placeholder="Digite a resposta do comando">${escapeTextarea(command.text || "")}</textarea>`
+                  : `<div class="system-response-box">${escapeHtml(command.responsePreview || "Comando interno do sistema.")}</div>`
+              }
+            </div>
+
+            <div class="meta-row">
+              <button class="save-btn" data-action="save">${command.allowCustomText ? "Salvar" : "Salvar aliases"}</button>
+              <button class="cancel-btn" data-action="cancel">Cancelar</button>
+            </div>
+          </div>
+
+          <div class="hint">Aguardando alteracoes...</div>
+        `;
+
+        const aliasesInput = card.querySelector("[data-field='aliases']");
+        const enabledInput = card.querySelector("[data-field='enabled']");
+        const detailsEl = card.querySelector("[data-section='details']");
+        const toggleBtn = card.querySelector("[data-action='toggle-details']");
+        const saveBtn = card.querySelector("[data-action='save']");
+        const cancelBtn = card.querySelector("[data-action='cancel']");
+        const hintEl = card.querySelector(".hint");
+        const textInput = card.querySelector("[data-field='text']");
+        const supportsCustomText = Boolean(command.allowCustomText);
+
+        let discardArmed = false;
+        const originalState = {
+          aliases: Array.isArray(command.aliases) ? [...command.aliases] : [],
+          enabled: Boolean(command.enabled),
+          text: String(command.text || ""),
+        };
+
+        function setExpanded(expanded) {
+          detailsEl.hidden = !expanded;
+          toggleBtn.setAttribute("aria-expanded", expanded ? "true" : "false");
+          toggleBtn.setAttribute(
+            "aria-label",
+            expanded ? "Esconder detalhes" : "Mostrar detalhes",
+          );
+          toggleBtn.title = expanded ? "Esconder detalhes" : "Mostrar detalhes";
+          toggleBtn.classList.toggle("expanded", expanded);
+          if (!expanded) {
+            discardArmed = false;
+          }
+        }
+
+        setExpanded(false);
+
+        function blinkButton(btn, className) {
+          btn.classList.remove(className);
+          void btn.offsetWidth;
+          btn.classList.add(className);
+        }
+
+        function currentAliases() {
+          return parseAliasInput(aliasesInput.value, command.name);
+        }
+
+        function hasAliasChanges() {
+          const textChanged = supportsCustomText
+            ? String(textInput?.value || "") !== originalState.text
+            : false;
+
+          return (
+            textChanged ||
+            currentAliases().join(" ") !==
+              parseAliasInput(
+                buildAliasInputValue(command.name, originalState.aliases),
+                command.name,
+              ).join(" ")
+          );
+        }
+
+        function restoreAliases() {
+          aliasesInput.value = buildAliasInputValue(
+            command.name,
+            originalState.aliases,
+          );
+          if (supportsCustomText && textInput) {
+            textInput.value = originalState.text;
+          }
+        }
+
+        toggleBtn.addEventListener("click", () => {
+          const expanded = toggleBtn.getAttribute("aria-expanded") === "true";
+
+          if (!expanded) {
+            setExpanded(true);
+            hintEl.textContent = hasAliasChanges()
+              ? "Alteracoes pendentes. Clique em Salvar para gravar."
+              : supportsCustomText
+                ? "Edite mensagem e aliases, depois clique em Salvar."
+                : "Edite aliases e clique em Salvar aliases para gravar.";
+            return;
+          }
+
+          if (!hasAliasChanges()) {
+            setExpanded(false);
+            hintEl.textContent = "Sem alteracoes pendentes.";
+            return;
+          }
+
+          if (!discardArmed) {
+            discardArmed = true;
+            blinkButton(saveBtn, "blink-double");
+            hintEl.textContent =
+              "Voce tem alteracoes de alias nao salvas. Clique na seta novamente para descartar.";
+            return;
+          }
+
+          blinkButton(cancelBtn, "blink-single");
+          restoreAliases();
+          discardArmed = false;
+          setTimeout(() => {
+            setExpanded(false);
+            hintEl.textContent = "Alteracoes de alias descartadas.";
+          }, 220);
+        });
+
+        aliasesInput.addEventListener("input", () => {
+          discardArmed = false;
+          hintEl.textContent = hasAliasChanges()
+            ? "Alteracoes pendentes. Clique em Salvar para gravar."
+            : "Sem alteracoes pendentes.";
+        });
+
+        if (supportsCustomText && textInput) {
+          textInput.addEventListener("input", () => {
+            discardArmed = false;
+            hintEl.textContent = hasAliasChanges()
+              ? "Alteracoes pendentes. Clique em Salvar para gravar."
+              : "Sem alteracoes pendentes.";
+          });
+        }
+
+        enabledInput.addEventListener("change", async () => {
+          const nextEnabled = Boolean(enabledInput.checked);
+
+          try {
+            await postJson("/api/commands/system/update", {
+              key,
+              enabled: nextEnabled,
+              aliases: originalState.aliases,
+              text: supportsCustomText ? originalState.text : undefined,
+            });
+
+            originalState.enabled = nextEnabled;
+            discardArmed = false;
+            hintEl.textContent = nextEnabled
+              ? "Comando padrao ativado."
+              : "Comando padrao desativado.";
+            await refreshCommands();
+          } catch (err) {
+            enabledInput.checked = Boolean(originalState.enabled);
+            hintEl.textContent = `Falha ao atualizar status: ${err.message}`;
+          }
+        });
+
+        saveBtn.addEventListener("click", async () => {
+          try {
+            const aliases = currentAliases();
+            aliasesInput.value = buildAliasInputValue(command.name, aliases);
+
+            await postJson("/api/commands/system/update", {
+              key,
+              enabled: Boolean(enabledInput.checked),
+              aliases,
+              text: supportsCustomText
+                ? String(textInput?.value || "")
+                : undefined,
+            });
+
+            originalState.aliases = aliases;
+            if (supportsCustomText) {
+              originalState.text = String(textInput?.value || "");
+            }
+            discardArmed = false;
+            hintEl.textContent = supportsCustomText
+              ? "Comando salvo."
+              : "Aliases salvos.";
+            await refreshCommands();
+          } catch (err) {
+            hintEl.textContent = supportsCustomText
+              ? `Falha ao salvar comando: ${err.message}`
+              : `Falha ao salvar aliases: ${err.message}`;
+          }
+        });
+
+        cancelBtn.addEventListener("click", () => {
+          discardArmed = false;
+          restoreAliases();
+          hintEl.textContent = "Alteracoes de alias descartadas.";
+        });
+
+        return card;
+      }
+
+      function createCommandCard(command) {
+        const id = String(command.id || "").trim();
+        const card = document.createElement("article");
+        card.className = "command-card";
+        card.dataset.commandId = id;
+
+        card.innerHTML = `
+          <div class="command-top-row">
+            <div class="command-grid">
+              <div>
+                <label>Comando</label>
+                <div class="name-prefix-wrap">
+                  <span class="command-prefix">!</span>
+                  <input data-field="name" type="text" value="${String(command.name || "").replace(/"/g, "&quot;")}" />
+                </div>
+              </div>
+
+              <div class="toggle-box">
+                <label>Status</label>
+                <label class="switch">
+                  <input data-field="enabled" type="checkbox" ${command.enabled ? "checked" : ""} />
+                  <span class="slider"></span>
+                </label>
+              </div>
+            </div>
+
+            <button class="expand-toggle" data-action="toggle-details" type="button" aria-label="Mostrar detalhes" aria-expanded="false" title="Mostrar detalhes">▾</button>
+          </div>
+
+          <div class="command-details" data-section="details" hidden>
+            <div>
+              <label>Texto do comando</label>
+              <textarea data-field="text" rows="4" placeholder="Digite a resposta que o bot vai enviar no chat.">${String(command.text || "")}</textarea>
+            </div>
+
+            <div>
+              <label>Alias</label>
+              <input data-field="aliases" type="text" value="${buildAliasInputValue(command.name, command.aliases).replace(/"/g, "&quot;")}" placeholder="alias1 alias2 alias3" />
+            </div>
+
+            <div class="meta-row">
+              <button class="save-btn" data-action="save">Salvar</button>
+              <button class="cancel-btn" data-action="cancel">Cancelar</button>
+              <button class="danger" data-action="delete">Excluir</button>
+            </div>
+          </div>
+
+          <div class="hint">Aguardando alteracoes...</div>
+        `;
+
+        const nameInput = card.querySelector("[data-field='name']");
+        const textInput = card.querySelector("[data-field='text']");
+        const aliasInput = card.querySelector("[data-field='aliases']");
+        const enabledInput = card.querySelector("[data-field='enabled']");
+        const detailsEl = card.querySelector("[data-section='details']");
+        const toggleBtn = card.querySelector("[data-action='toggle-details']");
+        const saveBtn = card.querySelector("[data-action='save']");
+        const cancelBtn = card.querySelector("[data-action='cancel']");
+        const deleteBtn = card.querySelector("[data-action='delete']");
+        const hintEl = card.querySelector(".hint");
+
+        let discardArmed = false;
+        let originalState = {
+          name: String(command.name || ""),
+          text: String(command.text || ""),
+          aliases: Array.isArray(command.aliases) ? [...command.aliases] : [],
+          enabled: Boolean(command.enabled),
+        };
+
+        function setExpanded(expanded) {
+          detailsEl.hidden = !expanded;
+          toggleBtn.setAttribute("aria-expanded", expanded ? "true" : "false");
+          toggleBtn.setAttribute(
+            "aria-label",
+            expanded ? "Esconder detalhes" : "Mostrar detalhes",
+          );
+          toggleBtn.title = expanded ? "Esconder detalhes" : "Mostrar detalhes";
+          toggleBtn.classList.toggle("expanded", expanded);
+          if (!expanded) {
+            discardArmed = false;
+          }
+        }
+
+        setExpanded(false);
+
+        function blinkButton(btn, className) {
+          btn.classList.remove(className);
+          void btn.offsetWidth;
+          btn.classList.add(className);
+        }
+
+        function getCurrentState() {
+          const currentName = sanitizeCommandNameInput(nameInput.value);
+          return {
+            name: currentName,
+            text: String(textInput.value || ""),
+            aliases: parseAliasInput(aliasInput.value, currentName),
+          };
+        }
+
+        function hasUnsavedChanges() {
+          const current = getCurrentState();
+          return (
+            current.name !== sanitizeCommandNameInput(originalState.name) ||
+            current.text !== originalState.text ||
+            current.aliases.join(" ") !==
+              parseAliasInput(
+                buildAliasInputValue(originalState.name, originalState.aliases),
+                originalState.name,
+              ).join(" ")
+          );
+        }
+
+        function restoreOriginalState() {
+          nameInput.value = sanitizeCommandNameInput(originalState.name);
+          textInput.value = originalState.text;
+          aliasInput.value = buildAliasInputValue(
+            originalState.name,
+            originalState.aliases,
+          );
+          enabledInput.checked = Boolean(originalState.enabled);
+        }
+
+        function markEditingHint() {
+          if (hasUnsavedChanges()) {
+            hintEl.textContent =
+              "Alteracoes pendentes. Clique em Salvar para gravar.";
+          } else {
+            hintEl.textContent = "Sem alteracoes pendentes.";
+          }
+        }
+
+        toggleBtn.addEventListener("click", () => {
+          const expanded = toggleBtn.getAttribute("aria-expanded") === "true";
+
+          if (!expanded) {
+            setExpanded(true);
+            hintEl.textContent = hasUnsavedChanges()
+              ? "Alteracoes pendentes. Clique em Salvar para gravar."
+              : "Edite e clique em Salvar para gravar.";
+            return;
+          }
+
+          if (!hasUnsavedChanges()) {
+            setExpanded(false);
+            hintEl.textContent = "Sem alteracoes pendentes.";
+            return;
+          }
+
+          if (!discardArmed) {
+            discardArmed = true;
+            blinkButton(saveBtn, "blink-double");
+            hintEl.textContent =
+              "Voce tem alteracoes nao salvas. Clique na seta novamente para descartar.";
+            return;
+          }
+
+          blinkButton(cancelBtn, "blink-single");
+          restoreOriginalState();
+          discardArmed = false;
+          setTimeout(() => {
+            setExpanded(false);
+            hintEl.textContent = "Alteracoes descartadas.";
+          }, 220);
+        });
+
+        async function performSave() {
+          const cleanedName = sanitizeCommandNameInput(nameInput.value);
+          if (!cleanedName) {
+            hintEl.textContent =
+              "Nome invalido: use letras, numeros e underscore";
+            throw new Error("Nome invalido");
+          }
+
+          nameInput.value = cleanedName;
+          const aliases = parseAliasInput(aliasInput.value, cleanedName);
+          aliasInput.value = buildAliasInputValue(cleanedName, aliases);
+
+          await postJson("/api/commands/upsert", {
+            id,
+            name: cleanedName,
+            aliases,
+            text: textInput.value,
+            enabled: Boolean(enabledInput.checked),
+            variables: command.variables || { count: 0 },
+          });
+
+          originalState = {
+            name: cleanedName,
+            text: String(textInput.value || ""),
+            aliases,
+            enabled: Boolean(enabledInput.checked),
+          };
+          discardArmed = false;
+        }
+
+        function handleFieldEdit() {
+          discardArmed = false;
+          markEditingHint();
+        }
+
+        function handleAliasInput() {
+          handleFieldEdit();
+        }
+
+        nameInput.addEventListener("input", handleFieldEdit);
+        textInput.addEventListener("input", handleFieldEdit);
+        aliasInput.addEventListener("input", handleAliasInput);
+        enabledInput.addEventListener("change", async () => {
+          const nextEnabled = Boolean(enabledInput.checked);
+
+          try {
+            await postJson("/api/commands/upsert", {
+              id,
+              name: sanitizeCommandNameInput(originalState.name),
+              aliases: originalState.aliases,
+              text: originalState.text,
+              enabled: nextEnabled,
+              variables: command.variables || { count: 0 },
+            });
+
+            originalState.enabled = nextEnabled;
+            command.enabled = nextEnabled;
+            discardArmed = false;
+
+            hintEl.textContent = hasUnsavedChanges()
+              ? "Alteracoes pendentes. Clique em Salvar para gravar."
+              : nextEnabled
+                ? "Comando ativado."
+                : "Comando desativado.";
+          } catch (err) {
+            enabledInput.checked = Boolean(originalState.enabled);
+            hintEl.textContent = `Falha ao atualizar status: ${err.message}`;
+          }
+        });
+
+        saveBtn.addEventListener("click", async () => {
+          try {
+            hintEl.textContent = "Salvando...";
+            await performSave();
+            hintEl.textContent = "Salvo";
+            blinkButton(saveBtn, "blink-double");
+            await refreshCommands();
+          } catch (err) {
+            hintEl.textContent = `Falha ao salvar: ${err.message}`;
+          }
+        });
+
+        cancelBtn.addEventListener("click", () => {
+          if (!hasUnsavedChanges()) {
+            hintEl.textContent = "Sem alteracoes para cancelar.";
+            return;
+          }
+
+          blinkButton(cancelBtn, "blink-single");
+          restoreOriginalState();
+          discardArmed = false;
+          hintEl.textContent = "Alteracoes descartadas.";
+        });
+
+        deleteBtn.addEventListener("click", async () => {
+          try {
+            await postJson("/api/commands/delete", { id });
+            await refreshCommands();
+          } catch (err) {
+            hintEl.textContent = `Falha ao excluir: ${err.message}`;
+          }
+        });
+
+        return card;
+      }
+
+      btnAddCommand.addEventListener("click", async () => {
+        if (activeTab !== "personalized") {
+          return;
+        }
+
+        try {
+          await postJson("/api/commands/upsert", {
+            name: nextCommandName(),
+            aliases: [],
+            text: "",
+            enabled: true,
+            variables: { count: 0 },
+          });
+          await refreshCommands();
+        } catch (err) {
+          alert(err.message);
+        }
+      });
+
+      tabPersonalized.addEventListener("click", () => {
+        setActiveTab("personalized");
+        renderCommands();
+      });
+
+      tabSystem.addEventListener("click", () => {
+        setActiveTab("system");
+        renderCommands();
+      });
+
+      tabS2.addEventListener("click", () => {
+        setActiveTab("s2");
+        renderCommands();
+      });
+
+      setActiveTab("system");
+
+      refreshCommands().catch((err) => {
+        commandsListEl.innerHTML = `<article class="command-card empty-card">Erro: ${err.message}</article>`;
+      });
+    </script>
+  </body>
+</html>

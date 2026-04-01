@@ -14,6 +14,22 @@
       <section class="panel">
         <h1>Recompensa das Cartas</h1>
         <p>Configure o resgate usado para abrir cartas.</p>
+        <p class="obs-link-row">
+          <span
+            >Link para OBS: "<span id="obsLinkText"
+              >http://localhost:49382/overlay</span
+            >".</span
+          >
+          <button
+            id="btnCopyObsLink"
+            class="copy-obs-btn"
+            type="button"
+            aria-label="Copiar link do OBS"
+            title="Copiar link do OBS"
+          >
+            <span id="copyObsIcon" aria-hidden="true">⎙</span>
+          </button>
+        </p>
 
         <div class="grid">
           <div>
@@ -71,6 +87,9 @@
       const rewardProgressFill = document.getElementById("rewardProgressFill");
       const rewardProgressText = document.getElementById("rewardProgressText");
       const redemptionsList = document.getElementById("redemptionsList");
+      const obsLinkText = document.getElementById("obsLinkText");
+      const btnCopyObsLink = document.getElementById("btnCopyObsLink");
+      const copyObsIcon = document.getElementById("copyObsIcon");
 
       const REWARD_APPLY_DELAY_MS = 10000;
       let rewardApplyTimeoutId = null;
@@ -246,6 +265,21 @@
         .addEventListener("click", () => {
           window.open("/overlay.html", "_blank");
         });
+
+      btnCopyObsLink.addEventListener("click", async () => {
+        try {
+          await navigator.clipboard.writeText(
+            String(obsLinkText?.textContent || "").trim(),
+          );
+          copyObsIcon.textContent = "✓";
+          btnCopyObsLink.title = "Copiado";
+          btnCopyObsLink.setAttribute("aria-label", "Copiado");
+        } catch {
+          copyObsIcon.textContent = "!";
+          btnCopyObsLink.title = "Falha ao copiar";
+          btnCopyObsLink.setAttribute("aria-label", "Falha ao copiar");
+        }
+      });
 
       document
         .getElementById("btnTestTrigger")

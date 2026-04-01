@@ -1,6 +1,7 @@
 const http = require("http");
 const fs = require("fs");
 const path = require("path");
+const vm = require("vm");
 const { exec } = require("child_process");
 const WebSocket = require("ws");
 require("dotenv").config();
@@ -42,6 +43,7 @@ const LEGACY_IMPORTED_ITEMS_FILE = path.join(
   "importedItems.txt",
 );
 const CREATED_REWARDS_FILE = path.join(RUNTIME_DATA_DIR, "createdRewards.json");
+const COMMANDS_FILE = path.join(RUNTIME_DATA_DIR, "commands.json");
 const ITEMS_UPLOAD_DIR = path.join(RUNTIME_IMGS_DIR, "items");
 const LEGACY_PLUSHIES_UPLOAD_DIR = path.join(RUNTIME_IMGS_DIR, "plushies");
 const SOUND_EFFECTS_UPLOAD_DIR = path.join(RUNTIME_AUDIO_DIR, "effects");
@@ -50,6 +52,7 @@ const GACHAPON_REWARD_TYPE = "gachapon";
 const SOUND_EFFECT_REWARD_TYPE = "soundEffect";
 const SOUND_EFFECT_TAG = "[soundEffect]";
 const PUBLIC_FILES = new Set([
+  "commands.html",
   "importItems.html",
   "cardCustomization.html",
   "controlPanel.html",
@@ -73,6 +76,14 @@ const twitchState = {
 };
 
 const pendingChatByDrawId = new Map();
+
+const chatListenerState = {
+  desired: false,
+  socket: null,
+  reconnectTimeoutId: null,
+  channelLogin: "",
+  nickLogin: "",
+};
 
 const DEFAULT_CARD_STYLE_CONFIG = {
   "--pack-main": "#1f356d",
@@ -885,7 +896,7 @@ function createTwitchAuthorizeUrl() {
   url.searchParams.set("redirect_uri", TWITCH_REDIRECT_URI);
   url.searchParams.set(
     "scope",
-    "channel:read:redemptions channel:manage:redemptions user:write:chat",
+    "channel:read:redemptions channel:manage:redemptions user:write:chat chat:read",
   );
   url.searchParams.set("state", state);
   url.searchParams.set("force_verify", "true");
@@ -1049,6 +1060,43 @@ async function sendChatMessage(config, message) {
       response.data[0].drop_reason?.message || "mensagem nao enviada";
     throw new Error(`Falha ao enviar mensagem no chat: ${dropReason}`);
   }
+}
+
+function sendIrcChatMessage(rawMessage) {
+  const socket = chatListenerState.socket;
+  const channelLogin = String(chatListenerState.channelLogin || "").trim();
+  const message = String(rawMessage || "").trim();
+
+  if (!socket || socket.readyState !== WebSocket.OPEN) {
+    return false;
+  }
+
+  if (!channelLogin || !message) {
+    return false;
+  }
+
+  socket.send(`PRIVMSG #${channelLogin} :${message}`);
+  return true;
+}
+
+async function sendChatCommandMessage(config, rawCommand) {
+  const command = String(rawCommand || "").trim();
+  if (!command) {
+    return;
+  }
+
+  if (!command.startsWith("/")) {
+    await sendChatMessage(config, command);
+    return;
+  }
+
+  const sentByIrc = sendIrcChatMessage(command);
+  if (sentByIrc) {
+    return;
+  }
+
+  // Fallback: Twitch usually recognizes dot-commands in regular chat flow.
+  await sendChatMessage(config, `.${command.slice(1)}`);
 }
 
 async function sendRedemptionMessageToChat(config, userName, itemName) {
@@ -1304,6 +1352,1055 @@ function normalizeRewardName(name) {
     .toLowerCase();
 }
 
+function normalizeCommandName(name) {
+  return String(name || "")
+    .replace(/^!+/, "")
+    .normalize("NFD")
+    .replace(/[\u0300-\u036f]/g, "")
+    .trim()
+    .toLowerCase();
+}
+
+const SYSTEM_COMMAND_DEFINITIONS = [
+  {
+    key: "cmd",
+    name: "cmd",
+    responsePreview:
+      "Gerencia comandos personalizados: add, remove, edit e alias.",
+    allowCustomText: false,
+    defaultText: "",
+  },
+  {
+    key: "s2",
+    name: "s2",
+    responsePreview:
+      "Mensagem configuravel para divulgar outro streamer informado em ${user}.",
+    allowCustomText: true,
+    defaultText:
+      "Acompanhe também o Streamer ${user}, que estará ao vivo em https://www.twitch.tv/${user}",
+  },
+];
+
+function getSystemCommandDefinitionByKey(key) {
+  const normalizedKey = String(key || "").trim();
+  return (
+    SYSTEM_COMMAND_DEFINITIONS.find((entry) => entry.key === normalizedKey) ||
+    null
+  );
+}
+
+function getSystemCommandDefinitionByToken(token) {
+  const normalized = sanitizeCommandToken(token);
+  return (
+    SYSTEM_COMMAND_DEFINITIONS.find(
+      (entry) => sanitizeCommandToken(entry.name) === normalized,
+    ) || null
+  );
+}
+
+function sanitizeCommandToken(token) {
+  return normalizeCommandName(token).replace(/[^a-z0-9_]+/g, "");
+}
+
+function parseAliasTokens(rawAliases) {
+  if (Array.isArray(rawAliases)) {
+    return rawAliases;
+  }
+
+  return String(rawAliases || "")
+    .split(/\s+/)
+    .filter(Boolean);
+}
+
+function normalizeCommandAliases(rawAliases, commandName) {
+  const normalizedName = sanitizeCommandToken(commandName);
+  const seen = new Set([normalizedName]);
+
+  return parseAliasTokens(rawAliases)
+    .map((alias) => sanitizeCommandToken(alias))
+    .filter(Boolean)
+    .filter((alias) => {
+      if (seen.has(alias)) {
+        return false;
+      }
+      seen.add(alias);
+      return true;
+    });
+}
+
+function getCommandTokens(command) {
+  const normalized = normalizeCommandEntry(command);
+  return [normalized.name, ...normalized.aliases];
+}
+
+function normalizeSystemCommandEntry(rawEntry, definition) {
+  const base = rawEntry && typeof rawEntry === "object" ? rawEntry : {};
+  const commandName = sanitizeCommandToken(definition?.name || "");
+  const allowCustomText = Boolean(definition?.allowCustomText);
+  const defaultText = String(definition?.defaultText || "").trim();
+
+  return {
+    key: String(definition?.key || "").trim(),
+    name: commandName,
+    aliases: normalizeCommandAliases(base.aliases, commandName),
+    enabled:
+      typeof base.enabled === "boolean"
+        ? base.enabled
+        : parseRewardEnabled(base.enabled, true),
+    allowCustomText,
+    text: allowCustomText
+      ? String(base.text || defaultText).trim() || defaultText
+      : "",
+    defaultText,
+    responsePreview: String(definition?.responsePreview || "").trim(),
+  };
+}
+
+function getSystemCommandTokens(command) {
+  const name = sanitizeCommandToken(command?.name || "");
+  const aliases = normalizeCommandAliases(command?.aliases, name);
+  return [name, ...aliases].filter(Boolean);
+}
+
+function buildDefaultSystemCommands() {
+  return SYSTEM_COMMAND_DEFINITIONS.map((definition) =>
+    normalizeSystemCommandEntry({}, definition),
+  );
+}
+
+function ensureUniqueSystemAliases(commands, blockedTokens = new Set()) {
+  const used = new Set(blockedTokens);
+  for (const command of commands) {
+    const name = sanitizeCommandToken(command.name);
+    used.add(name);
+
+    const uniqueAliases = [];
+    for (const alias of normalizeCommandAliases(command.aliases, name)) {
+      if (used.has(alias)) {
+        continue;
+      }
+      used.add(alias);
+      uniqueAliases.push(alias);
+    }
+    command.aliases = uniqueAliases;
+  }
+  return commands;
+}
+
+function normalizeCommandVariables(rawVariables) {
+  const base =
+    rawVariables && typeof rawVariables === "object" ? rawVariables : {};
+  const count = Number.parseInt(String(base.count ?? 0), 10);
+  return {
+    ...base,
+    count: Number.isFinite(count) && count >= 0 ? count : 0,
+  };
+}
+
+function normalizeCommandEntry(entry, fallback = {}) {
+  const base = entry && typeof entry === "object" ? entry : {};
+  const fallbackBase = fallback && typeof fallback === "object" ? fallback : {};
+
+  const rawName = String(base.name || fallbackBase.name || "").trim();
+  const normalizedName = sanitizeCommandToken(rawName);
+
+  return {
+    id: String(
+      base.id ||
+        fallbackBase.id ||
+        `cmd_${Date.now()}_${Math.random().toString(36).slice(2, 8)}`,
+    ).trim(),
+    name: normalizedName,
+    aliases: normalizeCommandAliases(
+      base.aliases != null ? base.aliases : fallbackBase.aliases,
+      normalizedName,
+    ),
+    text: String(base.text || fallbackBase.text || "").trim(),
+    enabled:
+      typeof base.enabled === "boolean"
+        ? base.enabled
+        : typeof fallbackBase.enabled === "boolean"
+          ? fallbackBase.enabled
+          : true,
+    variables: normalizeCommandVariables(
+      base.variables || fallbackBase.variables,
+    ),
+  };
+}
+
+function isValidCommandEntry(entry) {
+  return Boolean(
+    entry &&
+    typeof entry === "object" &&
+    String(entry.id || "").trim() &&
+    String(entry.name || "").trim(),
+  );
+}
+
+function normalizeCommandsRegistry(rawPayload) {
+  const rawCommands = Array.isArray(rawPayload?.commands)
+    ? rawPayload.commands
+    : Array.isArray(rawPayload)
+      ? rawPayload
+      : [];
+
+  const seenTokens = new Set();
+  const commands = [];
+
+  for (const rawEntry of rawCommands) {
+    const normalized = normalizeCommandEntry(rawEntry);
+    if (!isValidCommandEntry(normalized)) {
+      continue;
+    }
+
+    if (seenTokens.has(normalized.name)) {
+      continue;
+    }
+
+    const uniqueAliases = normalized.aliases.filter(
+      (alias) => !seenTokens.has(alias),
+    );
+    normalized.aliases = uniqueAliases;
+
+    seenTokens.add(normalized.name);
+    uniqueAliases.forEach((alias) => seenTokens.add(alias));
+    commands.push(normalized);
+  }
+
+  const rawSystemSource =
+    rawPayload && typeof rawPayload === "object"
+      ? rawPayload.systemCommands
+      : null;
+
+  const rawSystemByKey = Array.isArray(rawSystemSource)
+    ? Object.fromEntries(
+        rawSystemSource
+          .filter((entry) => entry && typeof entry === "object")
+          .map((entry) => [String(entry.key || "").trim(), entry]),
+      )
+    : rawSystemSource && typeof rawSystemSource === "object"
+      ? rawSystemSource
+      : null;
+
+  let systemCommands = SYSTEM_COMMAND_DEFINITIONS.map((definition) => {
+    const rawEntry = rawSystemByKey ? rawSystemByKey[definition.key] : null;
+    return normalizeSystemCommandEntry(rawEntry, definition);
+  });
+
+  systemCommands = ensureUniqueSystemAliases(systemCommands, seenTokens);
+
+  return {
+    kind: "commands",
+    updatedAt: String(rawPayload?.updatedAt || ""),
+    commands,
+    systemCommands,
+  };
+}
+
+function loadCommandsRegistry() {
+  ensureRuntimeDirs();
+
+  if (!fs.existsSync(COMMANDS_FILE)) {
+    return {
+      kind: "commands",
+      updatedAt: "",
+      commands: [],
+      systemCommands: buildDefaultSystemCommands(),
+    };
+  }
+
+  try {
+    const raw = fs.readFileSync(COMMANDS_FILE, "utf8");
+    const parsed = JSON.parse(raw);
+    return normalizeCommandsRegistry(parsed);
+  } catch {
+    return {
+      kind: "commands",
+      updatedAt: "",
+      commands: [],
+      systemCommands: buildDefaultSystemCommands(),
+    };
+  }
+}
+
+function saveCommandsRegistry(payload) {
+  ensureRuntimeDirs();
+
+  const normalized = normalizeCommandsRegistry(payload);
+  const next = {
+    kind: "commands",
+    updatedAt: new Date().toISOString(),
+    commands: normalized.commands,
+    systemCommands: Object.fromEntries(
+      normalized.systemCommands.map((entry) => [entry.key, entry]),
+    ),
+  };
+
+  fs.writeFileSync(COMMANDS_FILE, `${JSON.stringify(next, null, 2)}\n`, "utf8");
+  return next;
+}
+
+function listCommands() {
+  return loadCommandsRegistry().commands;
+}
+
+function listSystemCommands() {
+  return loadCommandsRegistry().systemCommands;
+}
+
+function upsertSystemCommandConfig(entry) {
+  const registry = loadCommandsRegistry();
+  const definition = getSystemCommandDefinitionByKey(entry?.key);
+  if (!definition) {
+    throw new Error("Comando padrao invalido");
+  }
+
+  const currentSystem = registry.systemCommands.find(
+    (command) => command.key === definition.key,
+  );
+
+  const normalized = normalizeSystemCommandEntry(
+    {
+      ...currentSystem,
+      ...entry,
+      text: definition?.allowCustomText
+        ? String(
+            entry?.text || currentSystem?.text || definition?.defaultText || "",
+          ).trim()
+        : "",
+    },
+    definition,
+  );
+
+  const customTokenSet = new Set();
+  registry.commands.forEach((command) => {
+    getCommandTokens(command).forEach((token) => customTokenSet.add(token));
+  });
+
+  const requestedTokens = new Set(getSystemCommandTokens(normalized));
+  const conflictWithCustom = [...requestedTokens].some((token) =>
+    customTokenSet.has(token),
+  );
+
+  if (conflictWithCustom) {
+    throw new Error(
+      "Alias de comando padrao conflita com comando personalizado",
+    );
+  }
+
+  const conflictWithOtherSystem = registry.systemCommands.some((command) => {
+    if (command.key === normalized.key) {
+      return false;
+    }
+    return getSystemCommandTokens(command).some((token) =>
+      requestedTokens.has(token),
+    );
+  });
+
+  if (conflictWithOtherSystem) {
+    throw new Error(
+      "Alias de comando padrao conflita com outro comando padrao",
+    );
+  }
+
+  const index = registry.systemCommands.findIndex(
+    (command) => command.key === normalized.key,
+  );
+  if (index >= 0) {
+    registry.systemCommands[index] = normalized;
+  } else {
+    registry.systemCommands.push(normalized);
+  }
+
+  return saveCommandsRegistry(registry);
+}
+
+function upsertCommandEntry(entry) {
+  const registry = loadCommandsRegistry();
+  const normalized = normalizeCommandEntry(entry);
+
+  if (!isValidCommandEntry(normalized)) {
+    throw new Error("Comando invalido");
+  }
+
+  const normalizedId = String(normalized.id || "").trim();
+  const requestedTokens = new Set(getCommandTokens(normalized));
+
+  const conflictWithSystem = registry.systemCommands.some((command) =>
+    getSystemCommandTokens(command).some((token) => requestedTokens.has(token)),
+  );
+
+  if (conflictWithSystem) {
+    throw new Error("Nome ou alias conflita com comando padrao");
+  }
+
+  const duplicateByToken = registry.commands.find((command) => {
+    const commandId = String(command.id || "").trim();
+    if (commandId === normalizedId) {
+      return false;
+    }
+
+    return getCommandTokens(command).some((token) =>
+      requestedTokens.has(token),
+    );
+  });
+
+  if (duplicateByToken) {
+    throw new Error("Nome ou alias ja esta em uso por outro comando");
+  }
+
+  const index = registry.commands.findIndex(
+    (command) => String(command.id || "").trim() === normalized.id,
+  );
+
+  if (index >= 0) {
+    registry.commands[index] = normalized;
+  } else {
+    registry.commands.push(normalized);
+  }
+
+  return saveCommandsRegistry(registry);
+}
+
+function removeCommandEntry(commandId) {
+  const id = String(commandId || "").trim();
+  if (!id) {
+    throw new Error("Informe o id do comando");
+  }
+
+  const registry = loadCommandsRegistry();
+  registry.commands = registry.commands.filter(
+    (command) => String(command.id || "").trim() !== id,
+  );
+  return saveCommandsRegistry(registry);
+}
+
+function decodeTemplateScriptSource(encodedScript) {
+  const raw = String(encodedScript || "");
+  try {
+    return JSON.parse(`"${raw}"`);
+  } catch {
+    return raw.replace(/\\"/g, '"').replace(/\\\\/g, "\\");
+  }
+}
+
+function decodeTemplateLiteralContent(rawLiteral, quoteChar) {
+  const raw = String(rawLiteral || "");
+
+  if (quoteChar === '"') {
+    try {
+      return JSON.parse(`"${raw}"`);
+    } catch {
+      return raw.replace(/\\"/g, '"').replace(/\\\\/g, "\\");
+    }
+  }
+
+  return raw.replace(/\\'/g, "'").replace(/\\\\/g, "\\");
+}
+
+function applyTemplateScopeValue(rawText, scope) {
+  return String(rawText || "").replace(
+    /\$\{([a-zA-Z_][a-zA-Z0-9_]*)\}/g,
+    (_match, key) => {
+      const value = scope[key];
+      if (value == null) return "";
+      return String(value);
+    },
+  );
+}
+
+function resolveUserVariableFromChat(sender, fullMessage, argsText) {
+  const rawSender = String(sender || "").trim() || "viewer";
+  const message = String(fullMessage || "");
+  const args = String(argsText || "").trim();
+
+  // 1) Se houver @algumNome em qualquer parte da mensagem, prioriza esse nome.
+  const atMatch = message.match(/@([a-zA-Z0-9_]+)/);
+  if (atMatch && atMatch[1]) {
+    return atMatch[1];
+  }
+
+  // 2) Sem @, pega o primeiro token depois do comando.
+  if (args) {
+    const firstArg = args.split(/\s+/).find(Boolean) || "";
+    const cleaned = String(firstArg)
+      .replace(/^[^a-zA-Z0-9_]+/, "")
+      .replace(/[^a-zA-Z0-9_]+$/, "");
+    if (cleaned) {
+      return cleaned;
+    }
+  }
+
+  // 3) Se foi só o comando, usa o sender.
+  return rawSender;
+}
+
+async function asyncReplace(inputText, regex, asyncReplacer) {
+  const text = String(inputText || "");
+  const matches = [];
+
+  text.replace(regex, (...args) => {
+    const match = args[0];
+    const offset = args[args.length - 2];
+    const groups = args.slice(1, -2);
+    matches.push({ match, offset, groups });
+    return match;
+  });
+
+  if (!matches.length) {
+    return text;
+  }
+
+  const replacements = await Promise.all(
+    matches.map((entry) => asyncReplacer(entry.match, ...entry.groups)),
+  );
+
+  let cursor = 0;
+  let output = "";
+  matches.forEach((entry, index) => {
+    output += text.slice(cursor, entry.offset);
+    output += replacements[index] == null ? "" : String(replacements[index]);
+    cursor = entry.offset + entry.match.length;
+  });
+  output += text.slice(cursor);
+
+  return output;
+}
+
+async function executeTemplateApiGet(rawUrlLiteral, quoteChar, scope) {
+  const decodedUrl = decodeTemplateLiteralContent(rawUrlLiteral, quoteChar);
+  const interpolatedUrl = applyTemplateScopeValue(decodedUrl, scope).trim();
+
+  if (!interpolatedUrl) {
+    throw new Error("url vazia");
+  }
+
+  let parsed;
+  try {
+    parsed = new URL(interpolatedUrl);
+  } catch {
+    throw new Error("url invalida");
+  }
+
+  if (!/^https?:$/.test(parsed.protocol)) {
+    throw new Error("protocolo nao permitido");
+  }
+
+  const controller = new AbortController();
+  const timeoutId = setTimeout(() => controller.abort(), 7000);
+
+  try {
+    const response = await fetch(parsed.toString(), {
+      method: "GET",
+      signal: controller.signal,
+      headers: {
+        Accept: "application/json, text/plain;q=0.9, */*;q=0.5",
+      },
+    });
+
+    if (!response.ok) {
+      throw new Error(`HTTP ${response.status}`);
+    }
+
+    const contentType = String(
+      response.headers.get("content-type") || "",
+    ).toLowerCase();
+    const isJson = contentType.includes("application/json");
+
+    if (isJson) {
+      const data = await response.json();
+      if (data == null) return "";
+      if (["string", "number", "boolean"].includes(typeof data)) {
+        return String(data).slice(0, 500);
+      }
+      return JSON.stringify(data).slice(0, 500);
+    }
+
+    const text = await response.text();
+    return String(text || "")
+      .trim()
+      .slice(0, 500);
+  } finally {
+    clearTimeout(timeoutId);
+  }
+}
+
+function sanitizeScriptVariableValue(value) {
+  if (value === undefined) return null;
+  if (value === null) return null;
+
+  const valueType = typeof value;
+  if (["string", "number", "boolean"].includes(valueType)) {
+    return value;
+  }
+
+  try {
+    const encoded = JSON.stringify(value);
+    if (!encoded || encoded.length > 32_000) {
+      return null;
+    }
+    return JSON.parse(encoded);
+  } catch {
+    return null;
+  }
+}
+
+function executeTemplateScript(rawScript, context) {
+  const scriptSource = decodeTemplateScriptSource(rawScript);
+  const variables = normalizeCommandVariables(context.variables);
+
+  const sandbox = {
+    ...variables,
+    streamer: context.streamer,
+    sender: context.sender,
+    user: context.user,
+    count: variables.count,
+    args: context.args,
+    message: context.message,
+    Math,
+    Date,
+    Number,
+    String,
+    Boolean,
+    Array,
+    Object,
+    JSON,
+    parseInt,
+    parseFloat,
+    isFinite,
+    isNaN,
+  };
+
+  const reservedKeys = new Set([
+    "streamer",
+    "sender",
+    "user",
+    "args",
+    "message",
+    "Math",
+    "Date",
+    "Number",
+    "String",
+    "Boolean",
+    "Array",
+    "Object",
+    "JSON",
+    "parseInt",
+    "parseFloat",
+    "isFinite",
+    "isNaN",
+  ]);
+
+  vm.createContext(sandbox);
+  const wrapped = `(function(){\n${scriptSource}\n})()`;
+  const result = new vm.Script(wrapped).runInContext(sandbox, { timeout: 250 });
+
+  const nextVariables = {
+    ...variables,
+  };
+
+  for (const [key, value] of Object.entries(sandbox)) {
+    if (reservedKeys.has(key)) {
+      continue;
+    }
+
+    const sanitized = sanitizeScriptVariableValue(value);
+    if (sanitized !== null) {
+      nextVariables[key] = sanitized;
+    }
+  }
+
+  nextVariables.count = Number.parseInt(String(nextVariables.count ?? 0), 10);
+  if (!Number.isFinite(nextVariables.count) || nextVariables.count < 0) {
+    nextVariables.count = 0;
+  }
+
+  return {
+    result,
+    variables: nextVariables,
+  };
+}
+
+async function renderCommandText(command, renderContext) {
+  let variables = normalizeCommandVariables(command.variables);
+  let text = String(command.text || "");
+
+  text = text.replace(
+    /\$\{script:\s*"((?:\\.|[^"\\])*)"\s*\}/g,
+    (_match, rawScript) => {
+      try {
+        const scriptResult = executeTemplateScript(rawScript, {
+          ...renderContext,
+          variables,
+        });
+        variables = scriptResult.variables;
+        return scriptResult.result == null ? "" : String(scriptResult.result);
+      } catch (err) {
+        return `[erro script: ${err instanceof Error ? err.message : String(err)}]`;
+      }
+    },
+  );
+
+  const scope = {
+    ...variables,
+    streamer: renderContext.streamer,
+    sender: renderContext.sender,
+    user: renderContext.user,
+    count: Number.parseInt(String(variables.count ?? 0), 10) || 0,
+  };
+
+  text = await asyncReplace(
+    text,
+    /\$\{api:\s*(['"])((?:\\.|(?!\1).)*)\1\s*\}/g,
+    async (_match, quoteChar, rawUrl) => {
+      try {
+        return await executeTemplateApiGet(rawUrl, quoteChar, scope);
+      } catch (err) {
+        return `[erro api: ${err instanceof Error ? err.message : String(err)}]`;
+      }
+    },
+  );
+
+  text = applyTemplateScopeValue(text, scope);
+
+  return {
+    text: text.trim(),
+    variables,
+  };
+}
+
+async function executeCommandFromChat(config, command, chatContext) {
+  const normalized = normalizeCommandEntry(command);
+  const baseVariables = normalizeCommandVariables(normalized.variables);
+  const shouldIncrementCount = /\$\{\s*count\s*\}/.test(
+    String(normalized.text || ""),
+  );
+  const nextVariables = {
+    ...baseVariables,
+    count: shouldIncrementCount ? baseVariables.count + 1 : baseVariables.count,
+  };
+
+  const rendered = await renderCommandText(
+    {
+      ...normalized,
+      variables: nextVariables,
+    },
+    {
+      streamer: chatContext.streamer,
+      sender: chatContext.sender,
+      user: chatContext.user,
+      args: chatContext.args,
+      message: chatContext.message,
+    },
+  );
+
+  upsertCommandEntry({
+    ...normalized,
+    variables: rendered.variables,
+  });
+
+  if (!rendered.text) {
+    return;
+  }
+
+  await sendChatMessage(config, rendered.text.slice(0, 500));
+}
+
+function findCustomCommandByToken(commands, token) {
+  const normalized = sanitizeCommandToken(token);
+  if (!normalized) return null;
+
+  return (
+    commands.find((command) => {
+      const tokens = getCommandTokens(command);
+      return tokens.includes(normalized);
+    }) || null
+  );
+}
+
+function parseCmdTargetAndText(rawInput) {
+  const match = /^(\S+)(?:\s+([\s\S]+))?$/.exec(String(rawInput || "").trim());
+  if (!match) return null;
+  return {
+    target: sanitizeCommandToken(match[1]),
+    text: String(match[2] || "").trim(),
+  };
+}
+
+async function executeCmdSystemCommand(config, chatContext) {
+  const argsInput = String(chatContext.args || "").trim();
+  if (!argsInput) {
+    await sendChatMessage(
+      config,
+      "Uso: !cmd add/remove/edit/alias <nomeComando> ...",
+    );
+    return;
+  }
+
+  const actionMatch = /^(\S+)(?:\s+([\s\S]*))?$/.exec(argsInput);
+  if (!actionMatch) {
+    await sendChatMessage(
+      config,
+      "Uso: !cmd add/remove/edit/alias <nomeComando> ...",
+    );
+    return;
+  }
+
+  const action = String(actionMatch[1] || "")
+    .trim()
+    .toLowerCase();
+  const payload = String(actionMatch[2] || "").trim();
+
+  try {
+    if (action === "add") {
+      const parsed = parseCmdTargetAndText(payload);
+      if (!parsed?.target || !parsed.text) {
+        await sendChatMessage(config, "Uso: !cmd add <nomeComando> <texto>");
+        return;
+      }
+
+      const existing = findCustomCommandByToken(listCommands(), parsed.target);
+      if (existing) {
+        await sendChatMessage(config, `Comando !${parsed.target} ja existe.`);
+        return;
+      }
+
+      upsertCommandEntry({
+        name: parsed.target,
+        aliases: [],
+        text: parsed.text,
+        enabled: true,
+        variables: { count: 0 },
+      });
+      await sendChatMessage(config, `Comando !${parsed.target} criado.`);
+      return;
+    }
+
+    if (action === "remove") {
+      const target = sanitizeCommandToken(payload);
+      if (!target) {
+        await sendChatMessage(config, "Uso: !cmd remove <nomeComando>");
+        return;
+      }
+
+      const existing = findCustomCommandByToken(listCommands(), target);
+      if (!existing) {
+        await sendChatMessage(config, `Comando !${target} nao encontrado.`);
+        return;
+      }
+
+      removeCommandEntry(existing.id);
+      await sendChatMessage(config, `Comando !${existing.name} removido.`);
+      return;
+    }
+
+    if (action === "edit") {
+      const parsed = parseCmdTargetAndText(payload);
+      if (!parsed?.target || !parsed.text) {
+        await sendChatMessage(config, "Uso: !cmd edit <nomeComando> <texto>");
+        return;
+      }
+
+      const existing = findCustomCommandByToken(listCommands(), parsed.target);
+      if (!existing) {
+        await sendChatMessage(
+          config,
+          `Comando !${parsed.target} nao encontrado.`,
+        );
+        return;
+      }
+
+      upsertCommandEntry({
+        ...existing,
+        text: parsed.text,
+      });
+      await sendChatMessage(config, `Comando !${existing.name} atualizado.`);
+      return;
+    }
+
+    if (action === "alias") {
+      const parsed = parseCmdTargetAndText(payload);
+      if (!parsed?.target) {
+        await sendChatMessage(
+          config,
+          "Uso: !cmd alias <nomeComando> <alias1> <alias2> ...",
+        );
+        return;
+      }
+
+      const existing = findCustomCommandByToken(listCommands(), parsed.target);
+      if (!existing) {
+        await sendChatMessage(
+          config,
+          `Comando !${parsed.target} nao encontrado.`,
+        );
+        return;
+      }
+
+      const nextAliases = [
+        ...normalizeCommandAliases(existing.aliases, existing.name),
+        ...normalizeCommandAliases(parsed.text, existing.name),
+      ];
+
+      upsertCommandEntry({
+        ...existing,
+        aliases: nextAliases,
+      });
+
+      const updated = findCustomCommandByToken(listCommands(), existing.name);
+      const aliasesLabel = normalizeCommandAliases(
+        updated?.aliases || [],
+        existing.name,
+      )
+        .map((alias) => `!${alias}`)
+        .join(", ");
+
+      await sendChatMessage(
+        config,
+        aliasesLabel
+          ? `Aliases de !${existing.name}: ${aliasesLabel}`
+          : `Comando !${existing.name} sem aliases.`,
+      );
+      return;
+    }
+
+    await sendChatMessage(config, "Acoes validas: add, remove, edit, alias");
+  } catch (err) {
+    await sendChatMessage(
+      config,
+      `Erro no !cmd: ${err instanceof Error ? err.message : String(err)}`,
+    );
+  }
+}
+
+async function executeTextSystemCommand(config, systemCommand, chatContext) {
+  const rendered = await renderCommandText(
+    {
+      name: systemCommand.name,
+      text: String(systemCommand.text || "").trim(),
+      variables: { count: 0 },
+    },
+    {
+      streamer: chatContext.streamer,
+      sender: chatContext.sender,
+      user: chatContext.user,
+      args: chatContext.args,
+      message: chatContext.message,
+    },
+  );
+
+  const message = String(rendered.text || "").trim();
+  if (message) {
+    await sendChatMessage(config, message.slice(0, 500));
+  }
+
+  const isS2Command =
+    String(systemCommand?.key || "").trim() === "s2" ||
+    sanitizeCommandToken(systemCommand?.name || "") === "s2";
+
+  if (!isS2Command) {
+    return;
+  }
+
+  const shoutoutTarget =
+    sanitizeCommandToken(chatContext?.user || "") ||
+    sanitizeCommandToken(chatContext?.sender || "") ||
+    "viewer";
+
+  await sendChatCommandMessage(config, `/shoutout ${shoutoutTarget}`);
+}
+
+async function tryHandleChatCommand(config, senderName, messageText) {
+  const message = String(messageText || "").trim();
+  if (!message.startsWith("!")) {
+    return;
+  }
+
+  const match = /^!(\S+)(?:\s+([\s\S]*))?$/.exec(message);
+  if (!match) {
+    return;
+  }
+
+  const requestedName = sanitizeCommandToken(match[1]);
+  if (!requestedName) {
+    return;
+  }
+
+  const registry = loadCommandsRegistry();
+
+  const systemCommand = registry.systemCommands.find((entry) => {
+    if (!entry.enabled) {
+      return false;
+    }
+
+    return getSystemCommandTokens(entry).includes(requestedName);
+  });
+
+  if (systemCommand) {
+    const definition = getSystemCommandDefinitionByToken(systemCommand.name);
+    const cached = loadCachedAuth();
+    const streamer = String(
+      cached?.displayName || cached?.login || "streamer",
+    ).trim();
+    const sender = String(senderName || "viewer").trim() || "viewer";
+    const args = String(match[2] || "").trim();
+    const user = resolveUserVariableFromChat(sender, message, args);
+
+    if (definition?.key === "cmd") {
+      await executeCmdSystemCommand(config, {
+        streamer,
+        sender,
+        user,
+        args,
+        message,
+      });
+      return;
+    }
+
+    if (definition?.allowCustomText) {
+      await executeTextSystemCommand(config, systemCommand, {
+        streamer,
+        sender,
+        user,
+        args,
+        message,
+      });
+      return;
+    }
+
+    return;
+  }
+
+  const command = registry.commands.find((entry) => {
+    if (!entry.enabled) {
+      return false;
+    }
+
+    const tokens = getCommandTokens(entry);
+    return tokens.includes(requestedName);
+  });
+
+  if (!command) {
+    return;
+  }
+
+  const cached = loadCachedAuth();
+  const streamer = String(
+    cached?.displayName || cached?.login || "streamer",
+  ).trim();
+  const sender = String(senderName || "viewer").trim() || "viewer";
+  const args = String(match[2] || "").trim();
+  const user = resolveUserVariableFromChat(sender, message, args);
+
+  await executeCommandFromChat(config, command, {
+    streamer,
+    sender,
+    user,
+    args,
+    message,
+  });
+}
+
 function logRewardsList(rewards, targetName) {
   const titleList = rewards.map((r) => r.title);
   console.log(
@@ -1481,18 +2578,6 @@ function syncCreatedRewardsAtStartup() {
   });
 }
 
-function logRedemptionsList(redemptions, rewardTitle) {
-  const compact = redemptions.map((r) => ({
-    id: r.id,
-    user: r.user_name,
-    status: r.status,
-    redeemed_at: r.redeemed_at,
-  }));
-  console.log(
-    `[TWITCH] redemptions "${rewardTitle}" (${redemptions.length}): ${JSON.stringify(compact)}`,
-  );
-}
-
 function trimSeenRedemptions(maxSize = 2000) {
   if (twitchState.seenRedemptions.size <= maxSize) return;
   const overflow = twitchState.seenRedemptions.size - maxSize;
@@ -1569,6 +2654,173 @@ async function processSoundEffectRedemptions(config) {
   }
 }
 
+function clearChatReconnectTimer() {
+  if (chatListenerState.reconnectTimeoutId) {
+    clearTimeout(chatListenerState.reconnectTimeoutId);
+    chatListenerState.reconnectTimeoutId = null;
+  }
+}
+
+function parseIrcTags(rawTags) {
+  const map = {};
+  const source = String(rawTags || "").trim();
+  if (!source) return map;
+
+  source.split(";").forEach((pair) => {
+    const [key, value] = pair.split("=");
+    if (!key) return;
+    map[key] = value || "";
+  });
+
+  return map;
+}
+
+async function handleIncomingIrcPrivMsg(config, ircLine) {
+  const match =
+    /^(?:@([^ ]+) )?:([^!]+)![^ ]+ PRIVMSG #([^ ]+) :([\s\S]*)$/.exec(ircLine);
+  if (!match) {
+    return;
+  }
+
+  const tags = parseIrcTags(match[1]);
+  const login = String(match[2] || "").trim();
+  const message = String(match[4] || "");
+  const displayName = String(tags["display-name"] || login || "").trim();
+  const senderName = displayName || login;
+
+  if (!senderName || !message) {
+    return;
+  }
+
+  const hasDedicatedBotIdentity = Boolean(
+    String(TWITCH_BOT_ACCESS_TOKEN || "").trim() &&
+    String(TWITCH_BOT_USER_ID || "").trim(),
+  );
+
+  if (
+    hasDedicatedBotIdentity &&
+    chatListenerState.nickLogin &&
+    login.toLowerCase() === chatListenerState.nickLogin
+  ) {
+    return;
+  }
+
+  try {
+    await tryHandleChatCommand(config, senderName, message);
+  } catch (err) {
+    console.error(
+      `[TWITCH] falha ao processar comando de chat: ${err instanceof Error ? err.message : String(err)}`,
+    );
+  }
+}
+
+function scheduleChatReconnect(config) {
+  if (!chatListenerState.desired) {
+    return;
+  }
+
+  clearChatReconnectTimer();
+  chatListenerState.reconnectTimeoutId = setTimeout(() => {
+    startChatListener(config);
+  }, 5000);
+}
+
+function stopChatListener() {
+  chatListenerState.desired = false;
+  clearChatReconnectTimer();
+
+  const socket = chatListenerState.socket;
+  chatListenerState.socket = null;
+  chatListenerState.channelLogin = "";
+  chatListenerState.nickLogin = "";
+
+  if (socket && socket.readyState === WebSocket.OPEN) {
+    socket.close(1000, "monitor-stopped");
+  }
+}
+
+function startChatListener(config) {
+  chatListenerState.desired = true;
+  clearChatReconnectTimer();
+
+  const cached = loadCachedAuth();
+  const channelLogin = String(cached?.login || "")
+    .trim()
+    .toLowerCase();
+  const token = String(
+    config?.chatAccessToken || config?.accessToken || "",
+  ).trim();
+  const nick = String(
+    TWITCH_BOT_ACCESS_TOKEN
+      ? TWITCH_BOT_LOGIN
+      : cached?.login || TWITCH_BOT_LOGIN || "sucatasbot",
+  )
+    .trim()
+    .toLowerCase();
+
+  if (!token || !channelLogin || !nick) {
+    console.warn("[TWITCH] listener de chat nao iniciado: token/login ausente");
+    return;
+  }
+
+  if (chatListenerState.socket) {
+    try {
+      chatListenerState.socket.close(1000, "restarting-chat-listener");
+    } catch {
+      // Ignora erro de close forçado.
+    }
+  }
+
+  const socket = new WebSocket("wss://irc-ws.chat.twitch.tv:443");
+  chatListenerState.socket = socket;
+  chatListenerState.channelLogin = channelLogin;
+  chatListenerState.nickLogin = nick;
+
+  socket.on("open", () => {
+    const oauthToken = token.toLowerCase().startsWith("oauth:")
+      ? token
+      : `oauth:${token}`;
+
+    socket.send("CAP REQ :twitch.tv/tags twitch.tv/commands");
+    socket.send(`PASS ${oauthToken}`);
+    socket.send(`NICK ${nick}`);
+    socket.send(`JOIN #${channelLogin}`);
+    console.log(`[TWITCH] listener de chat conectado em #${channelLogin}`);
+  });
+
+  socket.on("message", (data) => {
+    const payload = String(data || "");
+    const lines = payload.split("\r\n").filter(Boolean);
+
+    for (const line of lines) {
+      if (line.startsWith("PING ")) {
+        socket.send(line.replace("PING", "PONG"));
+        continue;
+      }
+
+      if (line.includes(" PRIVMSG ")) {
+        handleIncomingIrcPrivMsg(config, line).catch(() => {});
+      }
+    }
+  });
+
+  socket.on("close", () => {
+    if (chatListenerState.socket === socket) {
+      chatListenerState.socket = null;
+    }
+
+    if (chatListenerState.desired) {
+      scheduleChatReconnect(config);
+    }
+  });
+
+  socket.on("error", (err) => {
+    console.error(
+      `[TWITCH] erro no listener de chat: ${err instanceof Error ? err.message : String(err)}`,
+    );
+  });
+}
+
 async function pollTwitchRedemptions() {
   if (!twitchState.running || !twitchState.config) return;
 
@@ -1576,13 +2828,29 @@ async function pollTwitchRedemptions() {
   twitchState.lastError = null;
 
   try {
-    const reward = await ensureRewardExists(config);
+    let rewardId = String(twitchState.rewardId || "").trim();
+    let rewardTitle = String(
+      twitchState.lastRewardFound ||
+        config.rewardName ||
+        DEFAULT_REDEMPTION_NAME,
+    ).trim();
+
+    // Resolve reward apenas quando necessario (inicio/reconfiguracao).
+    if (!rewardId) {
+      const reward = await ensureRewardExists(config);
+      rewardId = String(reward?.id || "").trim();
+      rewardTitle = String(reward?.title || rewardTitle).trim();
+    }
+
+    if (!rewardId) {
+      throw new Error("Reward de monitor nao encontrado");
+    }
 
     const redemptionsUrl = new URL(
       "https://api.twitch.tv/helix/channel_points/custom_rewards/redemptions",
     );
     redemptionsUrl.searchParams.set("broadcaster_id", config.broadcasterId);
-    redemptionsUrl.searchParams.set("reward_id", reward.id);
+    redemptionsUrl.searchParams.set("reward_id", rewardId);
     redemptionsUrl.searchParams.set("status", "UNFULFILLED");
     redemptionsUrl.searchParams.set("first", "50");
 
@@ -1593,7 +2861,6 @@ async function pollTwitchRedemptions() {
     const redemptions = Array.isArray(redemptionsData.data)
       ? redemptionsData.data
       : [];
-    logRedemptionsList(redemptions, reward.title);
     redemptions.sort(
       (a, b) =>
         new Date(a.redeemed_at).getTime() - new Date(b.redeemed_at).getTime(),
@@ -1638,7 +2905,14 @@ async function pollTwitchRedemptions() {
 
     await processSoundEffectRedemptions(config);
   } catch (err) {
-    twitchState.lastError = err instanceof Error ? err.message : String(err);
+    const errMessage = err instanceof Error ? err.message : String(err);
+    // Se o reward id atual ficou invalido (ex.: reward removido externamente),
+    // limpa cache para resolver novamente no proximo ciclo.
+    if (/reward_id|custom_rewards|404|400/i.test(errMessage)) {
+      twitchState.rewardId = null;
+      twitchState.lastRewardFound = null;
+    }
+    twitchState.lastError = errMessage;
     console.error(`[TWITCH] erro no polling: ${twitchState.lastError}`);
   }
 }
@@ -1647,6 +2921,8 @@ function stopTwitchMonitor() {
   if (twitchState.intervalId) {
     clearInterval(twitchState.intervalId);
   }
+
+  stopChatListener();
 
   twitchState.running = false;
   twitchState.intervalId = null;
@@ -1681,6 +2957,7 @@ function startTwitchMonitor(config) {
     TWITCH_POLL_INTERVAL_MS,
   );
 
+  startChatListener(config);
   pollTwitchRedemptions();
 }
 
@@ -2245,6 +3522,100 @@ async function handleApiRoutes(req, res, cleanPath) {
         ok: false,
         message:
           err instanceof Error ? err.message : "Erro ao excluir sound effect",
+      });
+      return true;
+    }
+  }
+
+  if (cleanPath === "/api/commands" && req.method === "GET") {
+    const registry = loadCommandsRegistry();
+    const commands = registry.commands;
+    sendJson(res, 200, {
+      ok: true,
+      personalizedCommands: commands,
+      systemCommands: registry.systemCommands,
+      commands,
+      count: commands.length,
+    });
+    return true;
+  }
+
+  if (cleanPath === "/api/commands/system/update" && req.method === "POST") {
+    try {
+      const body = await readJsonBody(req);
+      const saved = upsertSystemCommandConfig({
+        key: body?.key,
+        aliases: body?.aliases,
+        text: body?.text,
+        enabled:
+          typeof body?.enabled === "boolean"
+            ? body.enabled
+            : parseRewardEnabled(body?.enabled, true),
+      });
+
+      sendJson(res, 200, {
+        ok: true,
+        personalizedCommands: saved.commands,
+        systemCommands: saved.systemCommands,
+      });
+      return true;
+    } catch (err) {
+      sendJson(res, 400, {
+        ok: false,
+        message:
+          err instanceof Error
+            ? err.message
+            : "Erro ao atualizar comando padrao",
+      });
+      return true;
+    }
+  }
+
+  if (cleanPath === "/api/commands/upsert" && req.method === "POST") {
+    try {
+      const body = await readJsonBody(req);
+      const saved = upsertCommandEntry({
+        id: body?.id,
+        name: body?.name,
+        aliases: body?.aliases,
+        text: body?.text,
+        enabled:
+          typeof body?.enabled === "boolean"
+            ? body.enabled
+            : parseRewardEnabled(body?.enabled, true),
+        variables: body?.variables,
+      });
+
+      sendJson(res, 200, {
+        ok: true,
+        commands: saved.commands,
+        count: saved.commands.length,
+      });
+      return true;
+    } catch (err) {
+      sendJson(res, 400, {
+        ok: false,
+        message: err instanceof Error ? err.message : "Erro ao salvar comando",
+      });
+      return true;
+    }
+  }
+
+  if (cleanPath === "/api/commands/delete" && req.method === "POST") {
+    try {
+      const body = await readJsonBody(req);
+      const saved = removeCommandEntry(body?.id);
+
+      sendJson(res, 200, {
+        ok: true,
+        commands: saved.commands,
+        count: saved.commands.length,
+      });
+      return true;
+    } catch (err) {
+      sendJson(res, 400, {
+        ok: false,
+        message: err instanceof Error ? err.message : "Erro ao remover comando",
       });
       return true;
     }
