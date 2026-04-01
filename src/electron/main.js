@@ -517,6 +517,8 @@ if (!hasSingleInstanceLock) {
     isQuitting = true;
   });
 
+  // teste new version
+
   app.on("activate", () => {
     restoreExistingWindow();
   });
