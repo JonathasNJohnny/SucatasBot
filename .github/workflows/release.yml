@@ -1,4 +1,5 @@
-name: Sucatas Bot V{version}
+name: Release Windows
+run-name: Sucatas Bot ${{ github.ref_name }}
 
 on:
   push:
