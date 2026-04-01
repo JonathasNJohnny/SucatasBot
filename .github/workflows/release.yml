@@ -1,4 +1,4 @@
-name: Release Windows
+name: Sucatas Bot V{version}
 
 on:
   push:
