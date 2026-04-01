@@ -1,4 +1,12 @@
-const { app, BrowserWindow, Menu, Tray, ipcMain, dialog } = require("electron");
+const {
+  app,
+  BrowserWindow,
+  Menu,
+  Tray,
+  ipcMain,
+  dialog,
+  shell,
+} = require("electron");
 const { autoUpdater } = require("electron-updater");
 const path = require("path");
 const fs = require("fs");
@@ -18,6 +26,7 @@ let mainWindow = null;
 let tray = null;
 let updateWindow = null;
 let isQuitting = false;
+let lastDownloadedUpdateFilePath = "";
 const hasSingleInstanceLock = app.requestSingleInstanceLock();
 
 // Detecta primeira execução
@@ -223,6 +232,19 @@ function closeUpdateWindow() {
   updateWindow = null;
 }
 
+async function openDownloadedUpdateFolderOnFailure() {
+  if (!lastDownloadedUpdateFilePath) {
+    return;
+  }
+
+  const updateFolder = path.dirname(lastDownloadedUpdateFilePath);
+  const openError = await shell.openPath(updateFolder);
+
+  if (openError) {
+    console.error("Falha ao abrir pasta do arquivo de atualizacao:", openError);
+  }
+}
+
 async function checkForUpdatesBeforeStart(forceDownload = false) {
   // Atualizacao automatica funciona em app empacotado com release publicado.
   if (!app.isPackaged) {
@@ -269,7 +291,10 @@ async function checkForUpdatesBeforeStart(forceDownload = false) {
       });
 
       autoUpdater.on("download-progress", onDownloadProgress);
-      await autoUpdater.downloadUpdate();
+      const downloadedFiles = await autoUpdater.downloadUpdate();
+      lastDownloadedUpdateFilePath = Array.isArray(downloadedFiles)
+        ? String(downloadedFiles[0] || "")
+        : "";
       autoUpdater.removeListener("download-progress", onDownloadProgress);
       markFirstRunDone();
 
@@ -307,7 +332,10 @@ async function checkForUpdatesBeforeStart(forceDownload = false) {
     });
 
     autoUpdater.on("download-progress", onDownloadProgress);
-    await autoUpdater.downloadUpdate();
+    const downloadedFiles = await autoUpdater.downloadUpdate();
+    lastDownloadedUpdateFilePath = Array.isArray(downloadedFiles)
+      ? String(downloadedFiles[0] || "")
+      : "";
     autoUpdater.removeListener("download-progress", onDownloadProgress);
 
     setUpdateWindowState({
@@ -333,6 +361,8 @@ async function checkForUpdatesBeforeStart(forceDownload = false) {
     setTimeout(() => {
       closeUpdateWindow();
     }, 1800);
+
+    await openDownloadedUpdateFolderOnFailure();
 
     return false;
   }
