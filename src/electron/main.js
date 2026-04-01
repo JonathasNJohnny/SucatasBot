@@ -18,6 +18,7 @@ let mainWindow = null;
 let tray = null;
 let updateWindow = null;
 let isQuitting = false;
+let isUpdateDownloadInProgress = false;
 const hasSingleInstanceLock = app.requestSingleInstanceLock();
 
 // Detecta primeira execução
@@ -223,14 +224,14 @@ function closeUpdateWindow() {
   updateWindow = null;
 }
 
-async function checkForUpdatesBeforeStart(forceDownload = false) {
+async function checkForUpdatesBeforeStart() {
   // Atualizacao automatica funciona em app empacotado com release publicado.
   if (!app.isPackaged) {
     return false;
   }
 
   autoUpdater.autoDownload = false;
-  autoUpdater.autoInstallOnAppQuit = false;
+  autoUpdater.autoInstallOnAppQuit = true;
   autoUpdater.allowPrerelease = false;
   autoUpdater.stageUpdates = true; // Economiza espaço em disco durante updates
 
@@ -251,88 +252,70 @@ async function checkForUpdatesBeforeStart(forceDownload = false) {
       return false;
     }
 
-    const onDownloadProgress = (progressObj) => {
-      const percent = Number(progressObj?.percent || 0).toFixed(1);
-      setUpdateWindowState({
-        title: `Atualizando para ${nextVersion}`,
-        detail: "Baixando atualizacao. Nao feche o app.",
-        progress: `${percent}%`,
-      });
-    };
-
-    // Na primeira execução, força o download obrigatoriamente
-    if (forceDownload) {
-      createUpdateWindow();
-      setUpdateWindowState({
-        title: `Atualizando para ${nextVersion}`,
-        detail: "Preparando download da versao completa...",
-      });
-
-      autoUpdater.on("download-progress", onDownloadProgress);
-      await autoUpdater.downloadUpdate();
-      autoUpdater.removeListener("download-progress", onDownloadProgress);
-      markFirstRunDone();
-
-      setUpdateWindowState({
-        title: "Atualizacao pronta",
-        detail: "Reiniciando o app para concluir a instalacao...",
-        progress: "100%",
-      });
-
-      isQuitting = true;
-      autoUpdater.quitAndInstall(false, true);
-      return true;
-    }
-
-    // Em execuções normais, permite usuário escolher
-    const { response } = await dialog.showMessageBox({
+    // Apenas informa e inicia download em segundo plano.
+    await dialog.showMessageBox({
       type: "info",
-      buttons: ["Sim, atualizar", "Nao, continuar"],
+      buttons: ["Ok"],
       defaultId: 0,
-      cancelId: 1,
       noLink: true,
       title: "Atualizacao disponivel",
       message: `Nova versao disponivel: ${nextVersion}`,
-      detail: "Deseja atualizar agora antes de abrir o app?",
+      detail:
+        "Vamos baixar em segundo plano. Quando terminar, voce podera escolher Atualizar agora ou Depois.",
     });
 
-    if (response !== 0) {
+    if (isUpdateDownloadInProgress) {
       return false;
     }
 
-    createUpdateWindow();
-    setUpdateWindowState({
-      title: `Atualizando para ${nextVersion}`,
-      detail: "Baixando atualizacao. Nao feche o app.",
-    });
+    isUpdateDownloadInProgress = true;
+
+    const onDownloadProgress = (progressObj) => {
+      const percent = Number(progressObj?.percent || 0).toFixed(1);
+      console.log(`Download da atualizacao ${nextVersion}: ${percent}%`);
+    };
+
+    const onUpdateDownloaded = async () => {
+      isUpdateDownloadInProgress = false;
+      autoUpdater.removeListener("download-progress", onDownloadProgress);
+
+      try {
+        const { response } = await dialog.showMessageBox({
+          type: "info",
+          buttons: ["Atualizar agora", "Depois"],
+          defaultId: 0,
+          cancelId: 1,
+          noLink: true,
+          title: "Atualizacao pronta",
+          message: `Versao ${nextVersion} pronta para instalar.`,
+          detail:
+            "Clique em Atualizar agora para reiniciar e instalar. Se escolher Depois, ela sera instalada ao fechar o app.",
+        });
+
+        if (response === 0) {
+          isQuitting = true;
+          autoUpdater.quitAndInstall(false, true);
+        }
+      } catch (error) {
+        console.error("Falha ao exibir prompt de instalacao:", error);
+      }
+    };
 
     autoUpdater.on("download-progress", onDownloadProgress);
-    await autoUpdater.downloadUpdate();
-    autoUpdater.removeListener("download-progress", onDownloadProgress);
+    autoUpdater.once("update-downloaded", onUpdateDownloaded);
 
-    setUpdateWindowState({
-      title: "Atualizacao pronta",
-      detail: "Reiniciando o app para concluir a instalacao...",
-      progress: "100%",
+    autoUpdater.downloadUpdate().catch((error) => {
+      isUpdateDownloadInProgress = false;
+      autoUpdater.removeListener("download-progress", onDownloadProgress);
+      autoUpdater.removeListener("update-downloaded", onUpdateDownloaded);
+      console.error("Falha ao baixar atualizacao:", error);
     });
 
-    isQuitting = true;
-    autoUpdater.quitAndInstall(false, true);
-    return true;
+    return false;
   } catch (error) {
     console.error("Falha ao verificar/baixar atualizacao:", error);
-    autoUpdater.removeAllListeners("download-progress");
 
-    setUpdateWindowState({
-      title: "Falha na atualizacao",
-      detail:
-        "Nao foi possivel atualizar agora. Vamos abrir o app normalmente.",
-      progress: "",
-    });
-
-    setTimeout(() => {
-      closeUpdateWindow();
-    }, 1800);
+    isUpdateDownloadInProgress = false;
 
     return false;
   }
@@ -472,9 +455,13 @@ if (!hasSingleInstanceLock) {
   });
 
   app.whenReady().then(() => {
-    checkForUpdatesBeforeStart(isFirstRun()).then((isInstallingUpdate) => {
+    checkForUpdatesBeforeStart().then((isInstallingUpdate) => {
       if (isInstallingUpdate) {
         return;
+      }
+
+      if (isFirstRun()) {
+        markFirstRunDone();
       }
 
       createPreloadFile();
