@@ -1015,7 +1015,14 @@ async function twitchApiRequest(url, config, options = {}) {
 
   if (!res.ok) {
     const text = await res.text();
-    throw new Error(`Twitch API ${res.status}: ${text}`);
+    const error = new Error(`Twitch API ${res.status}: ${text}`);
+    error.status = res.status;
+
+    if (res.status === 401) {
+      invalidateTwitchSession(error.message);
+    }
+
+    throw error;
   }
 
   return res.json();
@@ -2929,16 +2936,24 @@ function stopTwitchMonitor() {
   twitchState.rewardId = null;
 }
 
-function resetTwitchSessionState() {
+function resetTwitchSessionState(options = {}) {
   stopTwitchMonitor();
   twitchState.config = null;
-  twitchState.lastError = null;
+  if (!options.preserveLastError) {
+    twitchState.lastError = null;
+  }
   twitchState.lastRewardFound = null;
   twitchState.lastTriggerAt = null;
   twitchState.oauthState = null;
   twitchState.monitorStartedAt = null;
   twitchState.seenRedemptions.clear();
   pendingChatByDrawId.clear();
+}
+
+function invalidateTwitchSession(reason = "Twitch API 401") {
+  resetTwitchSessionState({ preserveLastError: true });
+  clearCachedTwitchSession();
+  twitchState.lastError = reason;
 }
 
 function startTwitchMonitor(config) {
@@ -3903,6 +3918,7 @@ async function handleApiRoutes(req, res, cleanPath) {
 
   if (cleanPath === "/api/twitch/test-chat" && req.method === "POST") {
     try {
+      const body = await readJsonBody(req);
       const cached = loadCachedAuth();
       const credentials = getClientCredentials();
       const config = twitchState.config || {
@@ -3925,7 +3941,10 @@ async function handleApiRoutes(req, res, cleanPath) {
         return true;
       }
 
-      await sendChatMessage(config, "Conectado e Funcionando!");
+      const customMessage = String(body?.message || "").trim();
+      const chatMessage = customMessage || "Conectado e Funcionando!";
+
+      await sendChatMessage(config, chatMessage);
       sendJson(res, 200, { ok: true, message: "Mensagem enviada no chat" });
     } catch (err) {
       sendJson(res, 500, {

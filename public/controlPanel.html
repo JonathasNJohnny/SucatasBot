@@ -43,6 +43,8 @@
       const statusRaw = document.getElementById("statusRaw");
       const userName = document.getElementById("userName");
       const btnStartStop = document.getElementById("btnStartStop");
+      const DISCONNECTED_SHAKE_CLASS = "is-disconnected-attempt";
+      let autoStartInFlight = false;
 
       function setStatus(text, cls) {
         statusLine.className = cls;
@@ -53,11 +55,33 @@
         return {};
       }
 
+      function hasTwitchAuth(status) {
+        return Boolean(status?.auth?.broadcasterId);
+      }
+
+      async function fetchTwitchStatus() {
+        const res = await fetch("/api/twitch/status");
+        return res.json();
+      }
+
+      function playDisconnectedAttemptAnimation() {
+        btnStartStop.classList.remove(DISCONNECTED_SHAKE_CLASS);
+        // Reinicia a animacao ao clicar repetidamente.
+        void btnStartStop.offsetWidth;
+        btnStartStop.classList.add(DISCONNECTED_SHAKE_CLASS);
+      }
+
+      btnStartStop.addEventListener("animationend", (event) => {
+        if (event.animationName === "monitor-disconnected-shake") {
+          btnStartStop.classList.remove(DISCONNECTED_SHAKE_CLASS);
+        }
+      });
+
       function updateStartStopButton(status) {
         const isRunning = Boolean(status?.running);
 
         btnStartStop.textContent = isRunning ? "⏹" : "▶";
-        btnStartStop.className = isRunning ? "btn-monitor stop" : "btn-monitor";
+        btnStartStop.classList.toggle("stop", isRunning);
         btnStartStop.dataset.action = isRunning ? "stop" : "start";
         btnStartStop.title = isRunning ? "Parar monitor" : "Iniciar monitor";
         btnStartStop.setAttribute(
@@ -67,8 +91,7 @@
       }
 
       async function refreshStatus() {
-        const res = await fetch("/api/twitch/status");
-        const data = await res.json();
+        const data = await fetchTwitchStatus();
         userName.textContent =
           data?.auth?.displayName || data?.auth?.login || "Usuário";
 
@@ -100,6 +123,30 @@
         }
 
         statusRaw.textContent = JSON.stringify(data, null, 2);
+
+        return data;
+      }
+
+      async function ensureAutoStart(reason = "load") {
+        if (autoStartInFlight) return;
+        autoStartInFlight = true;
+
+        try {
+          const currentStatus = await refreshStatus();
+          if (!hasTwitchAuth(currentStatus) || currentStatus.running) {
+            return;
+          }
+
+          await postJson("/api/twitch/start", getPayload());
+          await refreshStatus();
+        } catch (err) {
+          setStatus(
+            `Erro ao iniciar automaticamente (${reason}): ${err.message}`,
+            "danger",
+          );
+        } finally {
+          autoStartInFlight = false;
+        }
       }
 
       async function postJson(url, payload) {
@@ -124,6 +171,13 @@
           if (action === "stop") {
             await postJson("/api/twitch/stop");
           } else {
+            const currentStatus = await fetchTwitchStatus();
+            if (!hasTwitchAuth(currentStatus)) {
+              playDisconnectedAttemptAnimation();
+              setStatus("Nao conectado. Clique em Conectar Twitch", "danger");
+              await refreshStatus();
+              return;
+            }
             await postJson("/api/twitch/start", getPayload());
           }
           await refreshStatus();
@@ -135,8 +189,14 @@
 
       document.getElementById("btnTest").addEventListener("click", async () => {
         try {
-          await postJson("/api/twitch/test-chat");
-          setStatus("Mensagem enviada no chat: Conectado e Funcionando!", "ok");
+          const currentStatus = await fetchTwitchStatus();
+          const isRunning = Boolean(currentStatus?.running);
+          const chatMessage = isRunning
+            ? "conectado e rodando"
+            : "conectado e pausado";
+
+          await postJson("/api/twitch/test-chat", { message: chatMessage });
+          setStatus(`Mensagem enviada no chat: ${chatMessage}`, "ok");
           await refreshStatus();
         } catch (err) {
           setStatus(`Erro no teste: ${err.message}`, "danger");
@@ -158,7 +218,21 @@
           }
         });
 
-      refreshStatus();
+      ensureAutoStart("load");
+      document.addEventListener("visibilitychange", () => {
+        if (!document.hidden) {
+          ensureAutoStart("visibility");
+        }
+      });
+      window.addEventListener("focus", () => {
+        ensureAutoStart("focus");
+      });
+      window.addEventListener("pageshow", () => {
+        ensureAutoStart("pageshow");
+      });
+      window.addEventListener("twitch-auth-changed", () => {
+        ensureAutoStart("auth-changed");
+      });
       setInterval(refreshStatus, 4000);
     </script>
   </body>

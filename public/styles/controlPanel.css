@@ -199,6 +199,63 @@ button {
   color: var(--text-inverse);
 }
 
+.btn-monitor.is-disconnected-attempt {
+  animation: monitor-disconnected-shake 0.8s ease;
+}
+
+@keyframes monitor-disconnected-shake {
+  0% {
+    background: var(--ok-strong);
+    color: var(--text-on-ok);
+    transform: translateX(0);
+    filter: brightness(1);
+  }
+
+  15% {
+    background: #cf2e2e;
+    color: #ffffff;
+    transform: translateX(-4px) rotate(-6deg);
+  }
+
+  30% {
+    background: #cf2e2e;
+    color: #ffffff;
+    transform: translateX(4px) rotate(6deg);
+  }
+
+  45% {
+    background: #cf2e2e;
+    color: #ffffff;
+    transform: translateX(-3px) rotate(-4deg);
+  }
+
+  60% {
+    background: #cf2e2e;
+    color: #ffffff;
+    transform: translateX(3px) rotate(4deg);
+  }
+
+  75% {
+    background: #cf2e2e;
+    color: #ffffff;
+    transform: translateX(-2px) rotate(-2deg);
+  }
+
+  90% {
+    background: #cf2e2e;
+    color: #ffffff;
+    transform: translateX(2px) rotate(2deg);
+    filter: brightness(1.08);
+  }
+
+  100% {
+    background: var(--ok-strong);
+    color: var(--text-on-ok);
+    transform: translateX(0);
+    filter: brightness(1);
+  }
+}
+
 .btn-start {
   background: var(--ok-strong);
   color: var(--text-on-ok);

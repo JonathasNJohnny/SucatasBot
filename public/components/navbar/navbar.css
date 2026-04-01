@@ -52,6 +52,27 @@
 .navbar-user-chip.disconnected {
   background: #9e1d1d;
   border-color: #d24a4a;
+  animation: disconnected-chip-glow 5.6s ease-in-out infinite;
+}
+
+@keyframes disconnected-chip-glow {
+  0% {
+    box-shadow:
+      0 0 0 0 rgba(210, 74, 74, 0.35),
+      0 0 0 0 rgba(210, 74, 74, 0.2);
+  }
+
+  50% {
+    box-shadow:
+      0 0 0 4px rgba(210, 74, 74, 0.22),
+      0 0 18px 6px rgba(210, 74, 74, 0.38);
+  }
+
+  100% {
+    box-shadow:
+      0 0 0 0 rgba(210, 74, 74, 0.35),
+      0 0 0 0 rgba(210, 74, 74, 0.2);
+  }
 }
 
 .navbar-user-icon {

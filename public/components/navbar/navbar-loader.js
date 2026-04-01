@@ -1,4 +1,5 @@
 const THEME_STORAGE_KEY = "sucatasbot-theme";
+const TWITCH_CONNECT_ICON_URL = "/imgs/connection.png";
 
 function resolveStoredTheme() {
   const stored = localStorage.getItem(THEME_STORAGE_KEY);
@@ -66,8 +67,9 @@ function renderTwitchIdentity(mount, status, hasConnectionError = false) {
     return;
   }
 
-  icon.style.backgroundImage = "none";
-  icon.textContent = String.fromCodePoint(0x1f50c);
+  icon.style.backgroundImage = `url("${TWITCH_CONNECT_ICON_URL}")`;
+  icon.style.backgroundSize = "contain";
+  icon.textContent = "";
   chip.classList.add("disconnected", "connectable");
   chip.title = "Conectar Twitch";
   chip.setAttribute("aria-label", "Conectar Twitch");
