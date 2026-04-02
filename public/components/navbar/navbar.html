@@ -14,11 +14,6 @@
   <div class="navbar-actions">
     <ul class="navbar-links">
       <li>
-        <a href="/soundEffects.html" data-nav="soundEffects.html"
-          >Efeitos Sonoros</a
-        >
-      </li>
-      <li>
         <a href="/controlPanel.html" data-nav="controlPanel.html"
           >Painel de Controle</a
         >
@@ -29,19 +24,58 @@
       <li class="dropdown">
         <a
           class="dropdown-toggle"
-          data-nav="cardCustomization.html, importItems.html"
-          >Cartas</a
+          data-nav="cardCustomization.html, importItems.html, cardReward.html, sorteio.html, sorteioInstantaneo.html, soundEffects.html"
+          >Interacoes</a
         >
 
         <ul class="dropdown-menu">
-          <li>
-            <a href="/cardCustomization.html"> Personalização </a>
+          <li class="submenu" data-affiliate-required style="display: none">
+            <button class="submenu-toggle" type="button" data-submenu-toggle>
+              Cartas
+            </button>
+            <ul class="submenu-items">
+              <li>
+                <a
+                  href="/cardCustomization.html"
+                  data-nav="cardCustomization.html"
+                  >Personalizacao</a
+                >
+              </li>
+              <li>
+                <a href="/importItems.html" data-nav="importItems.html"
+                  >Importacao</a
+                >
+              </li>
+              <li>
+                <a href="/cardReward.html" data-nav="cardReward.html"
+                  >Resgates</a
+                >
+              </li>
+            </ul>
           </li>
-          <li>
-            <a href="/importItems.html"> Importação </a>
+          <li class="submenu">
+            <button class="submenu-toggle" type="button" data-submenu-toggle>
+              Sorteios
+            </button>
+            <ul class="submenu-items">
+              <li data-affiliate-required style="display: none">
+                <a href="/sorteio.html" data-nav="sorteio.html"
+                  >Sorteio em Campanha</a
+                >
+              </li>
+              <li>
+                <a
+                  href="/sorteioInstantaneo.html"
+                  data-nav="sorteioInstantaneo.html"
+                  >Sorteio Instantaneo</a
+                >
+              </li>
+            </ul>
           </li>
-          <li>
-            <a href="/cardReward.html"> Resgates </a>
+          <li data-affiliate-required style="display: none">
+            <a href="/soundEffects.html" data-nav="soundEffects.html"
+              >Efeitos Sonoros</a
+            >
           </li>
         </ul>
       </li>

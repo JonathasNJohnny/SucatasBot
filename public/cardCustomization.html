@@ -111,11 +111,12 @@
         </div>
 
         <div class="actions">
-          <button id="btnSave" class="save-button">Salvar</button>
           <button id="btnReset" class="cancel-button">Restaurar Padrao</button>
         </div>
 
-        <div id="saveStatus">Aguardando alteracoes...</div>
+        <div id="saveStatus">
+          Pronto para editar. As mudancas sao salvas automaticamente.
+        </div>
 
         <div class="preview-area">
           <div class="overlay" id="previewMount"></div>
@@ -139,7 +140,6 @@
       const cardImageInputEl = document.getElementById("cardImageInput");
       const packImageStatusEl = document.getElementById("packImageStatus");
       const cardImageStatusEl = document.getElementById("cardImageStatus");
-      const btnSave = document.getElementById("btnSave");
       const btnReset = document.getElementById("btnReset");
       const packSwingCountInputEl = document.getElementById(
         "packSwingCountInput",
@@ -156,6 +156,7 @@
 
       let selectedPackImageData = "";
       let selectedCardImageData = "";
+      let isSaving = false;
 
       const colorFields = [
         {
@@ -429,9 +430,7 @@
             cardImageData: selectedCardImageData,
           });
           updateImageStatus();
-          setStatus(
-            "Imagem importada. Clique em salvar para aplicar no overlay.",
-          );
+          autoSaveConfig();
         } catch {
           setStatus("Erro ao ler imagem selecionada.", true);
         }
@@ -541,6 +540,28 @@
         saveStatusEl.className = isError ? "danger" : "";
       }
 
+      async function autoSaveConfig() {
+        if (isSaving) return;
+
+        const config = collectConfigFromFields();
+        isSaving = true;
+        try {
+          await saveConfigToServer(config);
+          localStorage.setItem(STORAGE_KEY, JSON.stringify(config));
+          applyConfigToDocument(config);
+          applyImportedImagesToDocument(config);
+          applyPackLabelToPreview(config.packLabel);
+          setStatus("Alteracoes salvas automaticamente.");
+        } catch (err) {
+          setStatus(
+            `Erro ao salvar: ${err instanceof Error ? err.message : "falha desconhecida"}`,
+            true,
+          );
+        } finally {
+          isSaving = false;
+        }
+      }
+
       function createColorField(field) {
         const wrapper = document.createElement("div");
         wrapper.className = "field";
@@ -562,12 +583,14 @@
           textInput.value = colorInput.value.toUpperCase();
           const liveValue = sanitizeHex(colorInput.value, field.defaultValue);
           document.documentElement.style.setProperty(field.cssVar, liveValue);
+          autoSaveConfig();
         });
 
         textInput.addEventListener("input", () => {
           const value = sanitizeHex(textInput.value, field.defaultValue);
           colorInput.value = value;
           document.documentElement.style.setProperty(field.cssVar, value);
+          autoSaveConfig();
         });
 
         row.appendChild(colorInput);
@@ -638,10 +661,20 @@
 
       packLabelInputEl.addEventListener("input", () => {
         applyPackLabelToPreview(packLabelInputEl.value);
+        autoSaveConfig();
       });
 
       packSwingCountInputEl.addEventListener("input", () => {
         runPreviewPackSwing();
+        autoSaveConfig();
+      });
+
+      packRevealDelayMsInputEl.addEventListener("input", () => {
+        autoSaveConfig();
+      });
+
+      cardVisibleMsInputEl.addEventListener("input", () => {
+        autoSaveConfig();
       });
 
       btnImportPack.addEventListener("click", () => {
@@ -667,7 +700,7 @@
           cardImageData: selectedCardImageData,
         });
         updateImageStatus();
-        setStatus("Imagem do pacote removida. Clique em salvar.");
+        autoSaveConfig();
       });
 
       btnClearCard.addEventListener("click", () => {
@@ -677,24 +710,7 @@
           cardImageData: selectedCardImageData,
         });
         updateImageStatus();
-        setStatus("Imagem da carta removida. Clique em salvar.");
-      });
-
-      btnSave.addEventListener("click", async () => {
-        const config = collectConfigFromFields();
-        try {
-          await saveConfigToServer(config);
-          localStorage.setItem(STORAGE_KEY, JSON.stringify(config));
-          applyConfigToDocument(config);
-          applyImportedImagesToDocument(config);
-          applyPackLabelToPreview(config.packLabel);
-          setStatus("Cores e imagens salvas com sucesso.");
-        } catch (err) {
-          setStatus(
-            `Erro ao salvar personalizacao: ${err instanceof Error ? err.message : "falha desconhecida"}`,
-            true,
-          );
-        }
+        autoSaveConfig();
       });
 
       btnReset.addEventListener("click", async () => {
@@ -739,7 +755,9 @@
 
         applyPackLabelToPreview(initialConfig.packLabel);
 
-        setStatus("Ajuste as cores e clique em salvar.");
+        setStatus(
+          "Pronto para editar. As mudancas sao salvas automaticamente.",
+        );
       });
     </script>
   </body>

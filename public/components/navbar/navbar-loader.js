@@ -35,7 +35,64 @@ function setupThemeToggle(mount) {
   });
 }
 
+function setupNestedInteractionMenus(mount) {
+  const toggles = mount.querySelectorAll("[data-submenu-toggle]");
+  if (!toggles.length) {
+    return;
+  }
+
+  toggles.forEach((toggle) => {
+    toggle.addEventListener("click", (event) => {
+      event.preventDefault();
+      event.stopPropagation();
+
+      const item = toggle.closest(".submenu");
+      if (!item) return;
+
+      const isOpen = item.classList.contains("open");
+      mount.querySelectorAll(".submenu.open").forEach((entry) => {
+        entry.classList.remove("open");
+      });
+
+      if (!isOpen) {
+        item.classList.add("open");
+      }
+    });
+  });
+
+  document.addEventListener("click", (event) => {
+    if (!mount.contains(event.target)) {
+      mount.querySelectorAll(".submenu.open").forEach((entry) => {
+        entry.classList.remove("open");
+      });
+    }
+  });
+}
+
 let navbarTwitchMount = null;
+let navbarStatusPollingId = null;
+
+function isAffiliateRestricted(status) {
+  if (!status) return true;
+
+  if (status.affiliateRequired === true) {
+    return true;
+  }
+
+  const errorText = String(status.lastError || "").toLowerCase();
+  return (
+    errorText.includes("forbidden") &&
+    errorText.includes("partner or affiliate status")
+  );
+}
+
+function applyAffiliateFeatureVisibility(mount, status) {
+  const isRestricted = isAffiliateRestricted(status);
+
+  mount.querySelectorAll("[data-affiliate-required]").forEach((item) => {
+    item.style.display = isRestricted ? "none" : "";
+  });
+}
 
 function renderTwitchIdentity(mount, status, hasConnectionError = false) {
   const chip = mount.querySelector("[data-twitch-chip]");
@@ -87,13 +144,16 @@ async function setupTwitchIdentity(mount) {
 
     if (!res.ok) {
       renderTwitchIdentity(mount, null, true);
+      applyAffiliateFeatureVisibility(mount, null);
       return;
     }
 
     const status = await res.json();
     renderTwitchIdentity(mount, status, false);
+    applyAffiliateFeatureVisibility(mount, status);
   } catch {
     renderTwitchIdentity(mount, null, true);
+    applyAffiliateFeatureVisibility(mount, null);
   }
 }
 
@@ -127,7 +187,14 @@ async function loadSharedNavbar(mountId = "navbarMount") {
     applyTheme(activeTheme);
     updateThemeToggleIcon(mount, activeTheme);
     setupThemeToggle(mount);
+    setupNestedInteractionMenus(mount);
     await setupTwitchIdentity(mount);
+
+    if (!navbarStatusPollingId) {
+      navbarStatusPollingId = setInterval(() => {
+        setupTwitchIdentity(mount).catch(() => {});
+      }, 4000);
+    }
 
     const currentFile = window.location.pathname.split("/").pop();
 

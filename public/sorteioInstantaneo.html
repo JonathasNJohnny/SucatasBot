@@ -1,0 +1,195 @@
+<!doctype html>
+<html lang="pt-BR">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>Sorteio Instantaneo</title>
+    <link rel="stylesheet" href="/styles/general.css" />
+    <link rel="stylesheet" href="/styles/sorteioInstantaneo.css" />
+    <script src="/components/navbar/navbar-loader.js" defer></script>
+  </head>
+  <body>
+    <div id="navbarMount"></div>
+
+    <main class="wrap">
+      <section class="panel">
+        <div class="panel-head">
+          <h1>Sorteio Instantaneo</h1>
+          <span id="runBadge" class="badge off">Parado</span>
+        </div>
+
+        <p class="description">
+          Clique em Iniciar Sorteio para abrir as entradas via chat.
+          <span id="cmdDescription" style="font-weight: bold"
+            >Comando: use !join</span
+          >
+          <span
+            id="cmdWarning"
+            style="display: none; color: #ff6b6b; margin-left: 10px"
+            >⚠️ Comando desabilitado!</span
+          >
+        </p>
+
+        <div class="actions">
+          <button id="btnStart" class="btn-start" type="button">
+            Iniciar Sorteio
+          </button>
+          <button id="btnDraw" class="btn-draw" type="button">Sortear</button>
+          <button id="btnStop" class="btn-stop" type="button">Encerrar</button>
+        </div>
+
+        <div id="statusLine" class="status warn">Carregando status...</div>
+
+        <div class="winner-box">
+          <span class="winner-label">Vencedor:</span>
+          <strong id="winnerName">-</strong>
+        </div>
+
+        <div class="table-wrap">
+          <table>
+            <thead>
+              <tr>
+                <th>Participante (!join)</th>
+              </tr>
+            </thead>
+            <tbody id="rowsMount">
+              <tr>
+                <td class="empty">Nenhum participante ainda.</td>
+              </tr>
+            </tbody>
+          </table>
+        </div>
+      </section>
+    </main>
+
+    <script>
+      const btnStart = document.getElementById("btnStart");
+      const btnDraw = document.getElementById("btnDraw");
+      const btnStop = document.getElementById("btnStop");
+      const runBadge = document.getElementById("runBadge");
+      const statusLine = document.getElementById("statusLine");
+      const winnerName = document.getElementById("winnerName");
+      const rowsMount = document.getElementById("rowsMount");
+      const cmdDescription = document.getElementById("cmdDescription");
+      const cmdWarning = document.getElementById("cmdWarning");
+
+      function setStatus(text, cls = "warn") {
+        statusLine.className = `status ${cls}`;
+        statusLine.textContent = text;
+      }
+
+      async function postJson(url, payload) {
+        const res = await fetch(url, {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify(payload || {}),
+        });
+        const data = await res.json();
+
+        if (!res.ok || data.ok === false) {
+          throw new Error(data.message || "Falha na requisicao");
+        }
+
+        return data;
+      }
+
+      async function fetchStatus() {
+        const res = await fetch("/api/sorteio-instantaneo/status", {
+          cache: "no-store",
+        });
+        return res.json();
+      }
+
+      function renderRows(participants) {
+        const list = Array.isArray(participants) ? participants : [];
+        if (list.length === 0) {
+          rowsMount.innerHTML =
+            '<tr><td class="empty">Nenhum participante ainda.</td></tr>';
+          return;
+        }
+
+        rowsMount.innerHTML = list
+          .map((entry) => {
+            const name = String(entry?.name || entry?.login || "-");
+            return `<tr><td>${name}</td></tr>`;
+          })
+          .join("");
+      }
+
+      function applyStatus(data) {
+        const running = Boolean(data?.running);
+        runBadge.textContent = running ? "Aberto" : "Parado";
+        runBadge.className = `badge ${running ? "on" : "off"}`;
+
+        btnStart.disabled = running;
+        btnStop.disabled = !running;
+        btnDraw.disabled = !running;
+
+        const joinCmd = String(data?.joinCommand || "join");
+        const joinAliases = Array.isArray(data?.joinCommandAliases)
+          ? data.joinCommandAliases
+          : [];
+        const isCmdEnabled = Boolean(data?.joinCommandEnabled);
+
+        let cmdText = `Comando: use !${joinCmd}`;
+        if (joinAliases.length > 0) {
+          cmdText += ` (ou !${joinAliases.join(", !")})`;
+        }
+        cmdDescription.textContent = cmdText;
+        cmdWarning.style.display = isCmdEnabled ? "none" : "inline";
+
+        if (data?.lastError) {
+          setStatus(`Erro: ${data.lastError}`, "danger");
+        } else if (running) {
+          setStatus(`Sorteio aberto. Chat usa !${joinCmd} para entrar.`, "ok");
+        } else {
+          setStatus("Sorteio parado. Clique em Iniciar Sorteio.", "warn");
+        }
+
+        const winner = String(data?.winner || "").trim();
+        winnerName.textContent = winner || "-";
+
+        renderRows(data?.participants);
+      }
+
+      async function refreshStatus() {
+        const data = await fetchStatus();
+        applyStatus(data);
+      }
+
+      btnStart.addEventListener("click", async () => {
+        try {
+          await postJson("/api/sorteio-instantaneo/start");
+          await refreshStatus();
+        } catch (err) {
+          setStatus(`Erro ao iniciar: ${err.message}`, "danger");
+        }
+      });
+
+      btnDraw.addEventListener("click", async () => {
+        try {
+          const data = await postJson("/api/sorteio-instantaneo/draw");
+          winnerName.textContent = String(
+            data?.winner?.name || data?.winner || "-",
+          );
+          setStatus("Sorteio realizado com sucesso.", "ok");
+          await refreshStatus();
+        } catch (err) {
+          setStatus(`Erro ao sortear: ${err.message}`, "danger");
+        }
+      });
+
+      btnStop.addEventListener("click", async () => {
+        try {
+          await postJson("/api/sorteio-instantaneo/stop");
+          await refreshStatus();
+        } catch (err) {
+          setStatus(`Erro ao encerrar: ${err.message}`, "danger");
+        }
+      });
+
+      refreshStatus();
+      setInterval(refreshStatus, 3000);
+    </script>
+  </body>
+</html>

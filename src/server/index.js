@@ -44,6 +44,7 @@ const LEGACY_IMPORTED_ITEMS_FILE = path.join(
 );
 const CREATED_REWARDS_FILE = path.join(RUNTIME_DATA_DIR, "createdRewards.json");
 const COMMANDS_FILE = path.join(RUNTIME_DATA_DIR, "commands.json");
+const GIVEAWAY_STATE_FILE = path.join(RUNTIME_DATA_DIR, "giveaway-state.json");
 const ITEMS_UPLOAD_DIR = path.join(RUNTIME_IMGS_DIR, "items");
 const LEGACY_PLUSHIES_UPLOAD_DIR = path.join(RUNTIME_IMGS_DIR, "plushies");
 const SOUND_EFFECTS_UPLOAD_DIR = path.join(RUNTIME_AUDIO_DIR, "effects");
@@ -51,6 +52,15 @@ const BUNDLED_IMGS_DIR = path.join(PROJECT_ROOT_DIR, "imgs");
 const GACHAPON_REWARD_TYPE = "gachapon";
 const SOUND_EFFECT_REWARD_TYPE = "soundEffect";
 const SOUND_EFFECT_TAG = "[soundEffect]";
+const GIVEAWAY_CHECK_INTERVAL_MS = 60_000;
+const GIVEAWAY_POINTS_CHECKS = 2;
+const GIVEAWAY_POINTS_NORMAL = 5;
+const GIVEAWAY_POINTS_SUB = 8;
+const GIVEAWAY_INITIAL_POINTS = 100;
+const GIVEAWAY_SUB_CACHE_TTL_MS = 10 * 60_000;
+const INSTANT_GIVEAWAY_JOIN_COMMAND = "!join";
+const TWITCH_CHATTERS_SCOPE = "moderator:read:chatters";
+
 const PUBLIC_FILES = new Set([
   "commands.html",
   "importItems.html",
@@ -58,6 +68,8 @@ const PUBLIC_FILES = new Set([
   "controlPanel.html",
   "overlay.html",
   "cardReward.html",
+  "sorteio.html",
+  "sorteioInstantaneo.html",
   "soundEffects.html",
   "twitchCallback.html",
 ]);
@@ -67,6 +79,9 @@ const twitchState = {
   config: null,
   intervalId: null,
   lastError: null,
+  affiliateRequired: false,
+  forcedNonAffiliate: false,
+  rewardsPollingPaused: false,
   lastRewardFound: null,
   lastTriggerAt: null,
   seenRedemptions: new Set(),
@@ -85,6 +100,29 @@ const chatListenerState = {
   nickLogin: "",
 };
 
+const giveawayState = {
+  running: false,
+  title: "Sorteio",
+  intervalId: null,
+  startedAt: "",
+  lastCheckAt: "",
+  totalChecks: 0,
+  lastError: "",
+  channelLogin: "",
+  participantsByLogin: {},
+  subscriberCache: new Map(),
+};
+
+const instantGiveawayState = {
+  running: false,
+  participantsByLogin: {},
+  winner: "",
+  startedAt: "",
+  lastJoinAt: "",
+  lastDrawAt: "",
+  lastError: "",
+};
+
 const DEFAULT_CARD_STYLE_CONFIG = {
   "--pack-main": "#1f356d",
   "--pack-accent": "#4b73f9",
@@ -101,6 +139,539 @@ const DEFAULT_CARD_STYLE_CONFIG = {
   packRevealDelayMs: 1800,
   cardVisibleMs: 4000,
 };
+
+function normalizeGiveawayTitle(value) {
+  const trimmed = String(value || "").trim();
+  return trimmed || "Sorteio";
+}
+
+function normalizeParticipantName(value) {
+  const name = String(value || "").trim();
+  return name.toLowerCase();
+}
+
+function normalizeGiveawayParticipant(rawEntry) {
+  const login = normalizeParticipantName(rawEntry?.login || rawEntry?.name);
+  if (!login) {
+    return null;
+  }
+
+  return {
+    login,
+    name: String(rawEntry?.name || login).trim() || login,
+    points:
+      Number.parseInt(String(rawEntry?.points ?? 0), 10) > 0
+        ? Number.parseInt(String(rawEntry?.points ?? 0), 10)
+        : 0,
+    tickets:
+      Number.parseInt(String(rawEntry?.tickets ?? 0), 10) > 0
+        ? Number.parseInt(String(rawEntry?.tickets ?? 0), 10)
+        : 0,
+    isSubscriber: Boolean(rawEntry?.isSubscriber),
+    inChatNow: Boolean(rawEntry?.inChatNow),
+    consecutiveChecks:
+      Number.parseInt(String(rawEntry?.consecutiveChecks ?? 0), 10) > 0
+        ? Number.parseInt(String(rawEntry?.consecutiveChecks ?? 0), 10)
+        : 0,
+  };
+}
+
+function saveGiveawayStateToDisk() {
+  ensureRuntimeDirs();
+
+  const participants = Object.values(giveawayState.participantsByLogin || {});
+  const payload = {
+    kind: "giveawayState",
+    updatedAt: new Date().toISOString(),
+    title: normalizeGiveawayTitle(giveawayState.title),
+    participants,
+  };
+
+  fs.writeFileSync(
+    GIVEAWAY_STATE_FILE,
+    `${JSON.stringify(payload, null, 2)}\n`,
+    "utf8",
+  );
+}
+
+function loadGiveawayStateFromDisk() {
+  ensureRuntimeDirs();
+
+  if (!fs.existsSync(GIVEAWAY_STATE_FILE)) {
+    return;
+  }
+
+  try {
+    const raw = fs.readFileSync(GIVEAWAY_STATE_FILE, "utf8");
+    const parsed = JSON.parse(raw);
+    giveawayState.title = normalizeGiveawayTitle(parsed?.title);
+
+    const entries = Array.isArray(parsed?.participants)
+      ? parsed.participants
+      : [];
+    const participantsByLogin = {};
+
+    for (const entry of entries) {
+      const normalized = normalizeGiveawayParticipant(entry);
+      if (!normalized) continue;
+      participantsByLogin[normalized.login] = normalized;
+    }
+
+    giveawayState.participantsByLogin = participantsByLogin;
+  } catch (err) {
+    console.error(
+      `[SORTEIO] erro ao carregar giveaway-state.json: ${err instanceof Error ? err.message : String(err)}`,
+    );
+  }
+}
+
+function getGiveawayParticipantsList() {
+  const entries = Object.values(giveawayState.participantsByLogin || {});
+  return entries.sort((a, b) => {
+    if (b.points !== a.points) return b.points - a.points;
+    return a.name.localeCompare(b.name, "pt-BR");
+  });
+}
+
+function getSafeGiveawayStatus() {
+  return {
+    ok: true,
+    running: giveawayState.running,
+    title: normalizeGiveawayTitle(giveawayState.title),
+    startedAt: giveawayState.startedAt,
+    lastCheckAt: giveawayState.lastCheckAt,
+    totalChecks: giveawayState.totalChecks,
+    lastError: giveawayState.lastError,
+    channelLogin: giveawayState.channelLogin,
+    participants: getGiveawayParticipantsList(),
+  };
+}
+
+function getInstantGiveawayParticipantsList() {
+  const entries = Object.values(instantGiveawayState.participantsByLogin || {});
+  return entries.sort((a, b) => a.name.localeCompare(b.name, "pt-BR"));
+}
+
+function getSafeInstantGiveawayStatus() {
+  const joinCmd = getJoinCommandInfo();
+  return {
+    ok: true,
+    running: instantGiveawayState.running,
+    joinCommand: joinCmd?.name || "join",
+    joinCommandEnabled: joinCmd?.enabled || false,
+    joinCommandAliases: joinCmd?.aliases || [],
+    startedAt: instantGiveawayState.startedAt,
+    lastJoinAt: instantGiveawayState.lastJoinAt,
+    lastDrawAt: instantGiveawayState.lastDrawAt,
+    lastError: instantGiveawayState.lastError,
+    winner: instantGiveawayState.winner,
+    participants: getInstantGiveawayParticipantsList(),
+  };
+}
+
+function resetInstantGiveawayParticipants() {
+  instantGiveawayState.participantsByLogin = {};
+  instantGiveawayState.winner = "";
+  instantGiveawayState.lastJoinAt = "";
+  instantGiveawayState.lastDrawAt = "";
+}
+
+function ensureChatListenerForInstantGiveaway() {
+  const cached = loadCachedAuth();
+  const credentials = getClientCredentials();
+  const config = twitchState.config || {
+    clientId: String(credentials.clientId || "").trim(),
+    broadcasterId: String(cached?.broadcasterId || "").trim(),
+    accessToken: String(cached?.accessToken || "").trim(),
+    chatSenderId: String(
+      TWITCH_BOT_USER_ID || cached?.broadcasterId || "",
+    ).trim(),
+    chatAccessToken: String(
+      TWITCH_BOT_ACCESS_TOKEN || cached?.accessToken || "",
+    ).trim(),
+  };
+
+  if (!config.clientId || !config.broadcasterId || !config.accessToken) {
+    throw new Error("Conecte a Twitch antes de iniciar sorteio instantaneo");
+  }
+
+  if (
+    !chatListenerState.socket ||
+    chatListenerState.socket.readyState !== WebSocket.OPEN
+  ) {
+    startChatListener(config);
+  }
+}
+
+function startInstantGiveaway() {
+  ensureChatListenerForInstantGiveaway();
+  instantGiveawayState.running = true;
+  instantGiveawayState.startedAt = new Date().toISOString();
+  instantGiveawayState.lastError = "";
+  resetInstantGiveawayParticipants();
+}
+
+function stopInstantGiveaway() {
+  instantGiveawayState.running = false;
+
+  if (!twitchState.running) {
+    stopChatListener();
+  }
+}
+
+function getJoinCommandInfo() {
+  const registry = loadCommandsRegistry();
+  const joinCommand = registry.systemCommands.find((cmd) => cmd.key === "join");
+  return joinCommand || null;
+}
+
+function isJoinCommandMessage(messageText) {
+  const joinCmd = getJoinCommandInfo();
+  if (!joinCmd || !joinCmd.enabled) {
+    return false;
+  }
+
+  const message = String(messageText || "")
+    .trim()
+    .toLowerCase();
+
+  const tokens = [joinCmd.name, ...(joinCmd.aliases || [])];
+  return tokens.some((token) => {
+    const prefix = `!${token}`;
+    return message.startsWith(prefix);
+  });
+}
+
+function registerInstantGiveawayJoin(senderName, loginName, messageText) {
+  if (!instantGiveawayState.running) {
+    return;
+  }
+
+  if (!isJoinCommandMessage(messageText)) {
+    return;
+  }
+
+  const login = normalizeParticipantName(loginName || senderName);
+  if (!login) {
+    return;
+  }
+
+  const displayName = String(senderName || login).trim() || login;
+  if (!instantGiveawayState.participantsByLogin[login]) {
+    instantGiveawayState.participantsByLogin[login] = {
+      login,
+      name: displayName,
+      joinedAt: new Date().toISOString(),
+    };
+  }
+
+  instantGiveawayState.lastJoinAt = new Date().toISOString();
+}
+
+function drawInstantGiveawayWinner() {
+  const participants = getInstantGiveawayParticipantsList();
+  if (participants.length === 0) {
+    throw new Error("Nenhum participante entrou com !join");
+  }
+
+  const index = Math.floor(Math.random() * participants.length);
+  const winner = participants[index];
+  instantGiveawayState.winner = winner.name;
+  instantGiveawayState.lastDrawAt = new Date().toISOString();
+  return winner;
+}
+
+function resolveGiveawayHelixConfig() {
+  const credentials = getClientCredentials();
+  const cached = loadCachedAuth();
+  const fallbackModeratorId = String(
+    twitchState.config?.chatSenderId ||
+      TWITCH_BOT_USER_ID ||
+      cached?.broadcasterId ||
+      "",
+  ).trim();
+
+  return {
+    clientId: String(credentials.clientId || "").trim(),
+    accessToken: String(cached?.accessToken || "").trim(),
+    moderatorToken: String(
+      twitchState.config?.chatAccessToken || cached?.accessToken || "",
+    ).trim(),
+    broadcasterId: String(cached?.broadcasterId || "").trim(),
+    moderatorId: fallbackModeratorId,
+    scopes: Array.isArray(cached?.scope)
+      ? cached.scope
+      : String(cached?.scope || "")
+          .split(/\s+/)
+          .filter(Boolean),
+  };
+}
+
+async function checkIsSubscriber(login) {
+  const normalizedLogin = normalizeParticipantName(login);
+  if (!normalizedLogin) {
+    return false;
+  }
+
+  const cached = giveawayState.subscriberCache.get(normalizedLogin);
+  const now = Date.now();
+  if (cached && cached.expiresAt > now) {
+    return cached.value;
+  }
+
+  const helixConfig = resolveGiveawayHelixConfig();
+  if (
+    !helixConfig.clientId ||
+    !helixConfig.accessToken ||
+    !helixConfig.broadcasterId
+  ) {
+    giveawayState.subscriberCache.set(normalizedLogin, {
+      value: false,
+      expiresAt: now + GIVEAWAY_SUB_CACHE_TTL_MS,
+    });
+    return false;
+  }
+
+  try {
+    const usersUrl = new URL("https://api.twitch.tv/helix/users");
+    usersUrl.searchParams.set("login", normalizedLogin);
+    const usersData = await twitchApiRequest(usersUrl.toString(), helixConfig);
+    const userId = String(usersData?.data?.[0]?.id || "").trim();
+
+    if (!userId) {
+      giveawayState.subscriberCache.set(normalizedLogin, {
+        value: false,
+        expiresAt: now + GIVEAWAY_SUB_CACHE_TTL_MS,
+      });
+      return false;
+    }
+
+    const subsUrl = new URL("https://api.twitch.tv/helix/subscriptions/user");
+    subsUrl.searchParams.set("broadcaster_id", helixConfig.broadcasterId);
+    subsUrl.searchParams.set("user_id", userId);
+
+    const subsData = await twitchApiRequest(subsUrl.toString(), helixConfig);
+    const isSubscriber =
+      Array.isArray(subsData?.data) && subsData.data.length > 0;
+
+    giveawayState.subscriberCache.set(normalizedLogin, {
+      value: isSubscriber,
+      expiresAt: now + GIVEAWAY_SUB_CACHE_TTL_MS,
+    });
+
+    return isSubscriber;
+  } catch (err) {
+    giveawayState.subscriberCache.set(normalizedLogin, {
+      value: false,
+      expiresAt: now + GIVEAWAY_SUB_CACHE_TTL_MS,
+    });
+
+    if (err?.status !== 403 && err?.status !== 404) {
+      console.error(
+        `[SORTEIO] falha ao verificar sub para ${normalizedLogin}: ${err instanceof Error ? err.message : String(err)}`,
+      );
+    }
+
+    return false;
+  }
+}
+
+async function fetchCurrentChatters(channelLogin) {
+  const helixConfig = resolveGiveawayHelixConfig();
+  if (
+    !helixConfig.clientId ||
+    !helixConfig.moderatorToken ||
+    !helixConfig.broadcasterId ||
+    !helixConfig.moderatorId
+  ) {
+    throw new Error(
+      "Configuracao incompleta para ler chatters via Helix (clientId/token/broadcaster/moderator)",
+    );
+  }
+
+  const normalizedScopes = (helixConfig.scopes || []).map((scope) =>
+    String(scope || "")
+      .trim()
+      .toLowerCase(),
+  );
+  if (!normalizedScopes.includes(TWITCH_CHATTERS_SCOPE)) {
+    const scopeList = normalizedScopes.length
+      ? normalizedScopes.join(", ")
+      : "(nenhum escopo no token salvo)";
+    console.error(
+      `[SORTEIO] token sem escopo necessario '${TWITCH_CHATTERS_SCOPE}'. Escopos atuais: ${scopeList}`,
+    );
+    throw new Error(
+      `Token sem escopo '${TWITCH_CHATTERS_SCOPE}'. Reconecte a Twitch para atualizar permissoes.`,
+    );
+  }
+
+  const names = new Set();
+
+  let cursor = "";
+  let pages = 0;
+  const maxPages = 20;
+
+  while (pages < maxPages) {
+    const url = new URL("https://api.twitch.tv/helix/chat/chatters");
+    url.searchParams.set("broadcaster_id", helixConfig.broadcasterId);
+    url.searchParams.set("moderator_id", helixConfig.moderatorId);
+    url.searchParams.set("first", "1000");
+    if (cursor) {
+      url.searchParams.set("after", cursor);
+    }
+
+    const res = await fetch(url.toString(), {
+      headers: {
+        "Client-Id": helixConfig.clientId,
+        Authorization: `Bearer ${helixConfig.moderatorToken}`,
+      },
+    });
+
+    if (!res.ok) {
+      const errorBody = await res.text().catch(() => "");
+      console.error(
+        `[SORTEIO] erro ao ler chatters Helix: status=${res.status} broadcasterId=${helixConfig.broadcasterId} moderatorId=${helixConfig.moderatorId} url=${url.toString()} body=${errorBody.slice(0, 500)}`,
+      );
+      if (res.status === 401) {
+        console.error(
+          `[SORTEIO] dica 401: valide o token em https://id.twitch.tv/oauth2/validate e confirme o escopo '${TWITCH_CHATTERS_SCOPE}'.`,
+        );
+      }
+      throw new Error(`Falha ao ler chatters via Helix (status ${res.status})`);
+    }
+
+    const data = await res.json();
+    const list = Array.isArray(data?.data) ? data.data : [];
+
+    for (const entry of list) {
+      const login = normalizeParticipantName(entry?.user_login || "");
+      if (login) {
+        names.add(login);
+      }
+    }
+
+    cursor = String(data?.pagination?.cursor || "").trim();
+    pages += 1;
+    if (!cursor) {
+      break;
+    }
+  }
+
+  return names;
+}
+
+async function runGiveawayCheck(options = {}) {
+  const initialBonus = Boolean(options?.initialBonus);
+  const currentChatters = await fetchCurrentChatters(
+    giveawayState.channelLogin,
+  );
+
+  giveawayState.totalChecks += 1;
+  giveawayState.lastCheckAt = new Date().toISOString();
+  giveawayState.lastError = "";
+
+  const participants = giveawayState.participantsByLogin;
+
+  for (const login of Object.keys(participants)) {
+    const participant = participants[login];
+    participant.inChatNow = false;
+  }
+
+  for (const login of currentChatters) {
+    const existing = participants[login];
+    if (!existing) {
+      participants[login] = {
+        login,
+        name: login,
+        points: initialBonus ? GIVEAWAY_INITIAL_POINTS : 0,
+        tickets: 0,
+        isSubscriber: false,
+        inChatNow: true,
+        consecutiveChecks: 1,
+      };
+      continue;
+    }
+
+    existing.inChatNow = true;
+    existing.consecutiveChecks += 1;
+  }
+
+  for (const login of Object.keys(participants)) {
+    const participant = participants[login];
+
+    if (!participant.inChatNow) {
+      participant.consecutiveChecks = 0;
+      continue;
+    }
+
+    if (participant.consecutiveChecks % GIVEAWAY_POINTS_CHECKS !== 0) {
+      continue;
+    }
+
+    const isSubscriber = await checkIsSubscriber(login);
+    participant.isSubscriber = isSubscriber;
+    participant.points += isSubscriber
+      ? GIVEAWAY_POINTS_SUB
+      : GIVEAWAY_POINTS_NORMAL;
+  }
+
+  saveGiveawayStateToDisk();
+}
+
+function stopGiveawayMonitor() {
+  if (giveawayState.intervalId) {
+    clearInterval(giveawayState.intervalId);
+    giveawayState.intervalId = null;
+  }
+
+  giveawayState.running = false;
+  giveawayState.startedAt = "";
+  giveawayState.lastError = "";
+  saveGiveawayStateToDisk();
+}
+
+async function startGiveawayMonitor(customTitle = "") {
+  const cached = loadCachedAuth();
+  const channelLogin = normalizeParticipantName(cached?.login);
+  if (!channelLogin) {
+    throw new Error("Conecte a Twitch antes de iniciar o sorteio");
+  }
+
+  if (customTitle) {
+    giveawayState.title = normalizeGiveawayTitle(customTitle);
+  }
+
+  giveawayState.channelLogin = channelLogin;
+  giveawayState.lastError = "";
+  const isFirstRunEver = giveawayState.totalChecks === 0;
+
+  if (giveawayState.running) {
+    saveGiveawayStateToDisk();
+    return;
+  }
+
+  giveawayState.running = true;
+  giveawayState.startedAt = new Date().toISOString();
+
+  giveawayState.intervalId = setInterval(() => {
+    runGiveawayCheck().catch((err) => {
+      giveawayState.lastError =
+        err instanceof Error ? err.message : "Falha no monitor de sorteio";
+      console.error(`[SORTEIO] erro no monitor: ${giveawayState.lastError}`);
+    });
+  }, GIVEAWAY_CHECK_INTERVAL_MS);
+
+  await runGiveawayCheck({ initialBonus: isFirstRunEver }).catch((err) => {
+    giveawayState.lastError =
+      err instanceof Error ? err.message : "Falha no monitor de sorteio";
+    console.error(
+      `[SORTEIO] erro no monitor (checagem inicial): ${giveawayState.lastError}`,
+    );
+  });
+
+  saveGiveawayStateToDisk();
+}
 
 function ensureAuthCacheDir() {
   if (!fs.existsSync(AUTH_CACHE_DIR)) {
@@ -515,6 +1086,7 @@ let importedItems = loadImportedItemsFromFile();
 
 ensureRuntimeDirs();
 migrateRuntimeDataFiles();
+loadGiveawayStateFromDisk();
 
 function normalizeImportedItems(rawItems) {
   if (!Array.isArray(rawItems)) return [];
@@ -840,6 +1412,10 @@ function getSafeTwitchStatus() {
 
   return {
     running: twitchState.running,
+    affiliateRequired:
+      twitchState.affiliateRequired || twitchState.forcedNonAffiliate,
+    forcedNonAffiliate: twitchState.forcedNonAffiliate,
+    rewardsPollingPaused: twitchState.rewardsPollingPaused,
     config,
     envConfigured: Boolean(credentials.clientId && credentials.clientSecret),
     redemptionName:
@@ -885,6 +1461,26 @@ function getSafeTwitchStatus() {
   };
 }
 
+function isAffiliateRequiredPollingError(err, message) {
+  const statusCode = Number(err?.status || 0);
+  if (statusCode !== 403) {
+    return false;
+  }
+
+  const text = String(message || "").toLowerCase();
+  return text.includes("partner or affiliate status");
+}
+
+function pauseTwitchRedemptionsPolling(reason) {
+  if (twitchState.intervalId) {
+    clearInterval(twitchState.intervalId);
+    twitchState.intervalId = null;
+  }
+
+  twitchState.rewardsPollingPaused = true;
+  twitchState.lastError = String(reason || "Monitor pausado");
+}
+
 function createTwitchAuthorizeUrl() {
   const credentials = getClientCredentials();
   const state = `${Date.now()}_${Math.random().toString(36).slice(2, 10)}`;
@@ -896,7 +1492,7 @@ function createTwitchAuthorizeUrl() {
   url.searchParams.set("redirect_uri", TWITCH_REDIRECT_URI);
   url.searchParams.set(
     "scope",
-    "channel:read:redemptions channel:manage:redemptions user:write:chat chat:read",
+    `channel:read:redemptions channel:manage:redemptions user:write:chat chat:read channel:read:subscriptions ${TWITCH_CHATTERS_SCOPE}`,
   );
   url.searchParams.set("state", state);
   url.searchParams.set("force_verify", "true");
@@ -1385,6 +1981,14 @@ const SYSTEM_COMMAND_DEFINITIONS = [
     allowCustomText: true,
     defaultText:
       "Acompanhe também o Streamer ${user}, que estará ao vivo em https://www.twitch.tv/${user}",
+  },
+  {
+    key: "join",
+    name: "join",
+    responsePreview:
+      "Participa do sorteio instantâneo digitando !join no chat.",
+    allowCustomText: false,
+    defaultText: "",
   },
 ];
 
@@ -2699,6 +3303,8 @@ async function handleIncomingIrcPrivMsg(config, ircLine) {
     return;
   }
 
+  registerInstantGiveawayJoin(senderName, login, message);
+
   const hasDedicatedBotIdentity = Boolean(
     String(TWITCH_BOT_ACCESS_TOKEN || "").trim() &&
     String(TWITCH_BOT_USER_ID || "").trim(),
@@ -2913,6 +3519,13 @@ async function pollTwitchRedemptions() {
     await processSoundEffectRedemptions(config);
   } catch (err) {
     const errMessage = err instanceof Error ? err.message : String(err);
+    if (isAffiliateRequiredPollingError(err, errMessage)) {
+      twitchState.affiliateRequired = true;
+      pauseTwitchRedemptionsPolling(errMessage);
+      console.error(`[TWITCH] erro no polling: ${twitchState.lastError}`);
+      return;
+    }
+
     // Se o reward id atual ficou invalido (ex.: reward removido externamente),
     // limpa cache para resolver novamente no proximo ciclo.
     if (/reward_id|custom_rewards|404|400/i.test(errMessage)) {
@@ -2929,21 +3542,30 @@ function stopTwitchMonitor() {
     clearInterval(twitchState.intervalId);
   }
 
-  stopChatListener();
+  if (!instantGiveawayState.running) {
+    stopChatListener();
+  }
 
   twitchState.running = false;
   twitchState.intervalId = null;
+  twitchState.forcedNonAffiliate = false;
+  twitchState.rewardsPollingPaused = false;
   twitchState.rewardId = null;
 }
 
 function resetTwitchSessionState(options = {}) {
   stopTwitchMonitor();
+  stopInstantGiveaway();
+  resetInstantGiveawayParticipants();
   twitchState.config = null;
   if (!options.preserveLastError) {
     twitchState.lastError = null;
   }
   twitchState.lastRewardFound = null;
   twitchState.lastTriggerAt = null;
+  twitchState.affiliateRequired = false;
+  twitchState.forcedNonAffiliate = false;
+  twitchState.rewardsPollingPaused = false;
   twitchState.oauthState = null;
   twitchState.monitorStartedAt = null;
   twitchState.seenRedemptions.clear();
@@ -2959,20 +3581,31 @@ function invalidateTwitchSession(reason = "Twitch API 401") {
 function startTwitchMonitor(config) {
   stopTwitchMonitor();
 
+  const forceNonAffiliate = Boolean(config?.forceNonAffiliate);
   twitchState.running = true;
   twitchState.config = config;
   saveRewardConfig(config);
-  twitchState.lastError = null;
+  twitchState.lastError = forceNonAffiliate
+    ? 'Twitch API 403: {"error":"Forbidden","status":403,"message":"The broadcaster must have partner or affiliate status."}'
+    : null;
+  twitchState.affiliateRequired = forceNonAffiliate;
+  twitchState.forcedNonAffiliate = forceNonAffiliate;
+  twitchState.rewardsPollingPaused = forceNonAffiliate;
   twitchState.lastRewardFound = null;
   twitchState.rewardId = null;
   twitchState.monitorStartedAt = new Date();
+
+  startChatListener(config);
+
+  if (forceNonAffiliate) {
+    return;
+  }
 
   twitchState.intervalId = setInterval(
     pollTwitchRedemptions,
     TWITCH_POLL_INTERVAL_MS,
   );
 
-  startChatListener(config);
   pollTwitchRedemptions();
 }
 
@@ -3668,6 +4301,7 @@ async function handleApiRoutes(req, res, cleanPath) {
   }
 
   if (cleanPath === "/api/twitch/logout" && req.method === "POST") {
+    stopGiveawayMonitor();
     resetTwitchSessionState();
     clearCachedTwitchSession();
     sendJson(res, 200, { ok: true, status: getSafeTwitchStatus() });
@@ -3675,6 +4309,7 @@ async function handleApiRoutes(req, res, cleanPath) {
   }
 
   if (cleanPath === "/api/twitch/reset-cache" && req.method === "POST") {
+    stopGiveawayMonitor();
     resetTwitchSessionState();
     clearCachedAuth();
     sendJson(res, 200, {
@@ -3719,6 +4354,7 @@ async function handleApiRoutes(req, res, cleanPath) {
           body.rewardEnabled,
           DEFAULT_REWARD_ENABLED,
         ),
+        forceNonAffiliate: Boolean(body.forceNonAffiliate),
         pollIntervalMs: TWITCH_POLL_INTERVAL_MS,
       };
 
@@ -3731,7 +4367,9 @@ async function handleApiRoutes(req, res, cleanPath) {
       }
 
       startTwitchMonitor(config);
-      await syncCreatedRewardsForConfig(config);
+      if (!config.forceNonAffiliate) {
+        await syncCreatedRewardsForConfig(config);
+      }
       sendJson(res, 200, { ok: true, status: getSafeTwitchStatus() });
       return true;
     } catch (err) {
@@ -3956,6 +4594,103 @@ async function handleApiRoutes(req, res, cleanPath) {
       });
     }
     return true;
+  }
+
+  if (cleanPath === "/api/sorteio/status" && req.method === "GET") {
+    sendJson(res, 200, getSafeGiveawayStatus());
+    return true;
+  }
+
+  if (cleanPath === "/api/sorteio/title" && req.method === "POST") {
+    try {
+      const body = await readJsonBody(req);
+      if (giveawayState.running) {
+        sendJson(res, 400, {
+          ok: false,
+          message: "Encerrar o sorteio antes de alterar o titulo",
+        });
+        return true;
+      }
+
+      giveawayState.title = normalizeGiveawayTitle(body?.title);
+      saveGiveawayStateToDisk();
+      sendJson(res, 200, getSafeGiveawayStatus());
+      return true;
+    } catch (err) {
+      sendJson(res, 400, {
+        ok: false,
+        message:
+          err instanceof Error ? err.message : "Erro ao atualizar titulo",
+      });
+      return true;
+    }
+  }
+
+  if (cleanPath === "/api/sorteio/start" && req.method === "POST") {
+    try {
+      const body = await readJsonBody(req);
+      await startGiveawayMonitor(String(body?.title || ""));
+      sendJson(res, 200, getSafeGiveawayStatus());
+      return true;
+    } catch (err) {
+      sendJson(res, 400, {
+        ok: false,
+        message: err instanceof Error ? err.message : "Erro ao iniciar sorteio",
+      });
+      return true;
+    }
+  }
+
+  if (cleanPath === "/api/sorteio/stop" && req.method === "POST") {
+    stopGiveawayMonitor();
+    sendJson(res, 200, getSafeGiveawayStatus());
+    return true;
+  }
+
+  if (cleanPath === "/api/sorteio-instantaneo/status" && req.method === "GET") {
+    sendJson(res, 200, getSafeInstantGiveawayStatus());
+    return true;
+  }
+
+  if (cleanPath === "/api/sorteio-instantaneo/start" && req.method === "POST") {
+    try {
+      startInstantGiveaway();
+      sendJson(res, 200, getSafeInstantGiveawayStatus());
+      return true;
+    } catch (err) {
+      sendJson(res, 400, {
+        ok: false,
+        message:
+          err instanceof Error
+            ? err.message
+            : "Erro ao iniciar sorteio instantaneo",
+      });
+      return true;
+    }
+  }
+
+  if (cleanPath === "/api/sorteio-instantaneo/stop" && req.method === "POST") {
+    stopInstantGiveaway();
+    sendJson(res, 200, getSafeInstantGiveawayStatus());
+    return true;
+  }
+
+  if (cleanPath === "/api/sorteio-instantaneo/draw" && req.method === "POST") {
+    try {
+      const winner = drawInstantGiveawayWinner();
+      sendJson(res, 200, {
+        ...getSafeInstantGiveawayStatus(),
+        winner,
+      });
+      return true;
+    } catch (err) {
+      sendJson(res, 400, {
+        ok: false,
+        message:
+          err instanceof Error ? err.message : "Erro ao sortear participante",
+      });
+      return true;
+    }
   }
 
   return false;

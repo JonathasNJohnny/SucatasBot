@@ -237,3 +237,34 @@
   background: var(--input-bg);
   color: var(--ok);
 }
+
+.submenu-toggle {
+  width: 100%;
+  background: transparent;
+  border: 0;
+  text-align: left;
+  color: var(--muted);
+  padding: 0.6rem 1rem;
+  cursor: pointer;
+  font: inherit;
+}
+
+.submenu-toggle:hover {
+  background: var(--input-bg);
+  color: var(--ok);
+}
+
+.submenu-items {
+  list-style: none;
+  margin: 0;
+  padding: 0 0 0.3rem 0;
+  display: none;
+}
+
+.submenu.open .submenu-items {
+  display: block;
+}
+
+.submenu-items a {
+  padding-left: 1.6rem;
+}

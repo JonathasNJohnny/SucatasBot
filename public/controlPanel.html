@@ -33,14 +33,12 @@
 
         <div class="status" id="statusBox">
           <div id="statusLine" class="warn">Carregando status...</div>
-          <pre id="statusRaw"></pre>
         </div>
       </section>
     </main>
 
     <script>
       const statusLine = document.getElementById("statusLine");
-      const statusRaw = document.getElementById("statusRaw");
       const userName = document.getElementById("userName");
       const btnStartStop = document.getElementById("btnStartStop");
       const DISCONNECTED_SHAKE_CLASS = "is-disconnected-attempt";
@@ -51,8 +49,10 @@
         statusLine.textContent = text;
       }
 
-      function getPayload() {
-        return {};
+      function getPayload(options = {}) {
+        return {
+          forceNonAffiliate: Boolean(options.forceNonAffiliate),
+        };
       }
 
       function hasTwitchAuth(status) {
@@ -102,13 +102,11 @@
             "Configure TWITCH_CLIENT_ID e TWITCH_CLIENT_SECRET no cache inicial",
             "danger",
           );
-          statusRaw.textContent = JSON.stringify(data, null, 2);
           return;
         }
 
         if (!data.auth) {
           setStatus("Nao conectado. Clique em Conectar Twitch", "warn");
-          statusRaw.textContent = JSON.stringify(data, null, 2);
           return;
         }
 
@@ -119,10 +117,17 @@
         }
 
         if (data.lastError) {
-          setStatus(`Erro: ${data.lastError}`, "danger");
+          const isAffiliateError =
+            data.lastError &&
+            String(data.lastError)
+              .toLowerCase()
+              .includes("partner or affiliate");
+          if (isAffiliateError) {
+            setStatus("Monitor ativo - (não afiliado)", "ok");
+          } else {
+            setStatus(`Erro: ${data.lastError}`, "danger");
+          }
         }
-
-        statusRaw.textContent = JSON.stringify(data, null, 2);
 
         return data;
       }
@@ -164,7 +169,7 @@
         return data;
       }
 
-      btnStartStop.addEventListener("click", async () => {
+      btnStartStop.addEventListener("click", async (event) => {
         const action = btnStartStop.dataset.action || "start";
 
         try {
@@ -178,9 +183,18 @@
               await refreshStatus();
               return;
             }
-            await postJson("/api/twitch/start", getPayload());
+            const forceNonAffiliate =
+              Boolean(event?.ctrlKey) && Boolean(event?.altKey);
+            await postJson(
+              "/api/twitch/start",
+              getPayload({ forceNonAffiliate }),
+            );
           }
           await refreshStatus();
+
+          if (typeof refreshNavbarTwitchIdentity === "function") {
+            await refreshNavbarTwitchIdentity();
+          }
         } catch (err) {
           const label = action === "stop" ? "parar" : "iniciar";
           setStatus(`Erro ao ${label}: ${err.message}`, "danger");

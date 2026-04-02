@@ -1,0 +1,217 @@
+<!doctype html>
+<html lang="pt-BR">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>Sorteio</title>
+    <link rel="stylesheet" href="/styles/general.css" />
+    <link rel="stylesheet" href="/styles/sorteio.css" />
+    <script src="/components/navbar/navbar-loader.js" defer></script>
+  </head>
+  <body>
+    <div id="navbarMount"></div>
+
+    <main class="wrap">
+      <section class="panel">
+        <div class="panel-head">
+          <h1>Sorteio</h1>
+          <span id="runBadge" class="badge off">Encerrado</span>
+        </div>
+
+        <p class="description">
+          Inicie o sorteio para acumular participantes do chat e pontuar a cada
+          2 verificacoes (2 minutos). Na primeira verificacao, quem estiver no
+          chat comeca com 100 pontos.
+        </p>
+
+        <div class="controls">
+          <div class="field">
+            <label for="titleInput">Titulo</label>
+            <input id="titleInput" type="text" maxlength="80" />
+          </div>
+
+          <div class="buttons">
+            <button id="btnStart" class="btn-start" type="button">
+              Iniciar Sorteio
+            </button>
+            <button id="btnStop" class="btn-stop" type="button">
+              Encerrar Sorteio
+            </button>
+          </div>
+        </div>
+
+        <div id="statusLine" class="status warn">Carregando status...</div>
+
+        <div class="meta">
+          <span id="checkInfo">Verificacoes: 0</span>
+          <span id="lastCheckInfo">Ultima verificacao: -</span>
+        </div>
+
+        <div class="table-wrap">
+          <table>
+            <thead>
+              <tr>
+                <th>Nome</th>
+                <th>Pontos</th>
+                <th>Tickets</th>
+                <th>Sub</th>
+                <th>No chat</th>
+              </tr>
+            </thead>
+            <tbody id="rowsMount">
+              <tr>
+                <td colspan="5" class="empty">Sem participantes ainda.</td>
+              </tr>
+            </tbody>
+          </table>
+        </div>
+      </section>
+    </main>
+
+    <script>
+      const titleInput = document.getElementById("titleInput");
+      const btnStart = document.getElementById("btnStart");
+      const btnStop = document.getElementById("btnStop");
+      const runBadge = document.getElementById("runBadge");
+      const statusLine = document.getElementById("statusLine");
+      const checkInfo = document.getElementById("checkInfo");
+      const lastCheckInfo = document.getElementById("lastCheckInfo");
+      const rowsMount = document.getElementById("rowsMount");
+
+      function setStatus(text, cls = "warn") {
+        statusLine.className = `status ${cls}`;
+        statusLine.textContent = text;
+      }
+
+      function formatDate(isoText) {
+        const value = String(isoText || "").trim();
+        if (!value) return "-";
+        const date = new Date(value);
+        if (Number.isNaN(date.getTime())) return "-";
+        return date.toLocaleString("pt-BR");
+      }
+
+      async function postJson(url, payload) {
+        const res = await fetch(url, {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify(payload || {}),
+        });
+
+        const data = await res.json();
+        if (!res.ok || data.ok === false) {
+          throw new Error(data.message || "Falha na requisicao");
+        }
+
+        return data;
+      }
+
+      async function fetchStatus() {
+        const res = await fetch("/api/sorteio/status", { cache: "no-store" });
+        return res.json();
+      }
+
+      function renderRows(participants) {
+        const list = Array.isArray(participants) ? participants : [];
+        if (list.length === 0) {
+          rowsMount.innerHTML =
+            '<tr><td colspan="5" class="empty">Sem participantes ainda.</td></tr>';
+          return;
+        }
+
+        rowsMount.innerHTML = list
+          .map((entry) => {
+            const name = String(entry?.name || entry?.login || "-");
+            const points = Number.parseInt(String(entry?.points ?? 0), 10) || 0;
+            const tickets =
+              Number.parseInt(String(entry?.tickets ?? 0), 10) || 0;
+            const isSubscriber = Boolean(entry?.isSubscriber);
+            const inChatNow = Boolean(entry?.inChatNow);
+
+            return `
+              <tr>
+                <td>${name}</td>
+                <td>${points}</td>
+                <td>${tickets}</td>
+                <td>${isSubscriber ? "Sim" : "Nao"}</td>
+                <td>${inChatNow ? "Sim" : "Nao"}</td>
+              </tr>
+            `;
+          })
+          .join("");
+      }
+
+      function applyStatus(data) {
+        const running = Boolean(data?.running);
+        const title = String(data?.title || "Sorteio");
+
+        titleInput.value = title;
+        titleInput.disabled = running;
+
+        runBadge.textContent = running ? "Em andamento" : "Encerrado";
+        runBadge.className = `badge ${running ? "on" : "off"}`;
+
+        btnStart.disabled = running;
+        btnStop.disabled = !running;
+
+        setStatus(
+          running
+            ? "Sorteio em andamento. Primeira verificacao ja executada e depois a cada 1 minuto."
+            : "Sorteio encerrado. Voce pode iniciar novamente.",
+          running ? "ok" : "warn",
+        );
+
+        if (data?.lastError) {
+          setStatus(`Erro no monitor: ${data.lastError}`, "danger");
+        }
+
+        checkInfo.textContent = `Verificacoes: ${
+          Number.parseInt(String(data?.totalChecks ?? 0), 10) || 0
+        }`;
+        lastCheckInfo.textContent = `Ultima verificacao: ${formatDate(data?.lastCheckAt)}`;
+
+        renderRows(data?.participants);
+      }
+
+      async function refreshStatus() {
+        const data = await fetchStatus();
+        applyStatus(data);
+      }
+
+      btnStart.addEventListener("click", async () => {
+        try {
+          const title = titleInput.value.trim();
+          await postJson("/api/sorteio/start", { title });
+          await refreshStatus();
+        } catch (err) {
+          setStatus(`Erro ao iniciar sorteio: ${err.message}`, "danger");
+        }
+      });
+
+      btnStop.addEventListener("click", async () => {
+        try {
+          await postJson("/api/sorteio/stop");
+          await refreshStatus();
+        } catch (err) {
+          setStatus(`Erro ao encerrar sorteio: ${err.message}`, "danger");
+        }
+      });
+
+      titleInput.addEventListener("blur", async () => {
+        if (titleInput.disabled) return;
+
+        try {
+          await postJson("/api/sorteio/title", {
+            title: titleInput.value.trim(),
+          });
+          await refreshStatus();
+        } catch (err) {
+          setStatus(`Erro ao salvar titulo: ${err.message}`, "danger");
+        }
+      });
+
+      refreshStatus();
+      setInterval(refreshStatus, 5000);
+    </script>
+  </body>
+</html>
