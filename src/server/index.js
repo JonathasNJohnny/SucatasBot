@@ -4,6 +4,10 @@ const path = require("path");
 const vm = require("vm");
 const { exec } = require("child_process");
 const WebSocket = require("ws");
+const {
+  baseTwitchApiRequest,
+  baseTwitchRequest,
+} = require("./services/twitch-http.service");
 require("dotenv").config();
 
 const PORT = 49382;
@@ -44,7 +48,6 @@ const LEGACY_IMPORTED_ITEMS_FILE = path.join(
 );
 const CREATED_REWARDS_FILE = path.join(RUNTIME_DATA_DIR, "createdRewards.json");
 const COMMANDS_FILE = path.join(RUNTIME_DATA_DIR, "commands.json");
-const GIVEAWAY_STATE_FILE = path.join(RUNTIME_DATA_DIR, "giveaway-state.json");
 const ITEMS_UPLOAD_DIR = path.join(RUNTIME_IMGS_DIR, "items");
 const LEGACY_PLUSHIES_UPLOAD_DIR = path.join(RUNTIME_IMGS_DIR, "plushies");
 const SOUND_EFFECTS_UPLOAD_DIR = path.join(RUNTIME_AUDIO_DIR, "effects");
@@ -52,14 +55,7 @@ const BUNDLED_IMGS_DIR = path.join(PROJECT_ROOT_DIR, "imgs");
 const GACHAPON_REWARD_TYPE = "gachapon";
 const SOUND_EFFECT_REWARD_TYPE = "soundEffect";
 const SOUND_EFFECT_TAG = "[soundEffect]";
-const GIVEAWAY_CHECK_INTERVAL_MS = 60_000;
-const GIVEAWAY_POINTS_CHECKS = 2;
-const GIVEAWAY_POINTS_NORMAL = 5;
-const GIVEAWAY_POINTS_SUB = 8;
-const GIVEAWAY_INITIAL_POINTS = 100;
-const GIVEAWAY_SUB_CACHE_TTL_MS = 10 * 60_000;
 const INSTANT_GIVEAWAY_JOIN_COMMAND = "!join";
-const TWITCH_CHATTERS_SCOPE = "moderator:read:chatters";
 
 const PUBLIC_FILES = new Set([
   "commands.html",
@@ -68,7 +64,6 @@ const PUBLIC_FILES = new Set([
   "controlPanel.html",
   "overlay.html",
   "cardReward.html",
-  "sorteio.html",
   "sorteioInstantaneo.html",
   "soundEffects.html",
   "twitchCallback.html",
@@ -100,19 +95,6 @@ const chatListenerState = {
   nickLogin: "",
 };
 
-const giveawayState = {
-  running: false,
-  title: "Sorteio",
-  intervalId: null,
-  startedAt: "",
-  lastCheckAt: "",
-  totalChecks: 0,
-  lastError: "",
-  channelLogin: "",
-  participantsByLogin: {},
-  subscriberCache: new Map(),
-};
-
 const instantGiveawayState = {
   running: false,
   participantsByLogin: {},
@@ -140,111 +122,9 @@ const DEFAULT_CARD_STYLE_CONFIG = {
   cardVisibleMs: 4000,
 };
 
-function normalizeGiveawayTitle(value) {
-  const trimmed = String(value || "").trim();
-  return trimmed || "Sorteio";
-}
-
 function normalizeParticipantName(value) {
   const name = String(value || "").trim();
   return name.toLowerCase();
-}
-
-function normalizeGiveawayParticipant(rawEntry) {
-  const login = normalizeParticipantName(rawEntry?.login || rawEntry?.name);
-  if (!login) {
-    return null;
-  }
-
-  return {
-    login,
-    name: String(rawEntry?.name || login).trim() || login,
-    points:
-      Number.parseInt(String(rawEntry?.points ?? 0), 10) > 0
-        ? Number.parseInt(String(rawEntry?.points ?? 0), 10)
-        : 0,
-    tickets:
-      Number.parseInt(String(rawEntry?.tickets ?? 0), 10) > 0
-        ? Number.parseInt(String(rawEntry?.tickets ?? 0), 10)
-        : 0,
-    isSubscriber: Boolean(rawEntry?.isSubscriber),
-    inChatNow: Boolean(rawEntry?.inChatNow),
-    consecutiveChecks:
-      Number.parseInt(String(rawEntry?.consecutiveChecks ?? 0), 10) > 0
-        ? Number.parseInt(String(rawEntry?.consecutiveChecks ?? 0), 10)
-        : 0,
-  };
-}
-
-function saveGiveawayStateToDisk() {
-  ensureRuntimeDirs();
-
-  const participants = Object.values(giveawayState.participantsByLogin || {});
-  const payload = {
-    kind: "giveawayState",
-    updatedAt: new Date().toISOString(),
-    title: normalizeGiveawayTitle(giveawayState.title),
-    participants,
-  };
-
-  fs.writeFileSync(
-    GIVEAWAY_STATE_FILE,
-    `${JSON.stringify(payload, null, 2)}\n`,
-    "utf8",
-  );
-}
-
-function loadGiveawayStateFromDisk() {
-  ensureRuntimeDirs();
-
-  if (!fs.existsSync(GIVEAWAY_STATE_FILE)) {
-    return;
-  }
-
-  try {
-    const raw = fs.readFileSync(GIVEAWAY_STATE_FILE, "utf8");
-    const parsed = JSON.parse(raw);
-    giveawayState.title = normalizeGiveawayTitle(parsed?.title);
-
-    const entries = Array.isArray(parsed?.participants)
-      ? parsed.participants
-      : [];
-    const participantsByLogin = {};
-
-    for (const entry of entries) {
-      const normalized = normalizeGiveawayParticipant(entry);
-      if (!normalized) continue;
-      participantsByLogin[normalized.login] = normalized;
-    }
-
-    giveawayState.participantsByLogin = participantsByLogin;
-  } catch (err) {
-    console.error(
-      `[SORTEIO] erro ao carregar giveaway-state.json: ${err instanceof Error ? err.message : String(err)}`,
-    );
-  }
-}
-
-function getGiveawayParticipantsList() {
-  const entries = Object.values(giveawayState.participantsByLogin || {});
-  return entries.sort((a, b) => {
-    if (b.points !== a.points) return b.points - a.points;
-    return a.name.localeCompare(b.name, "pt-BR");
-  });
-}
-
-function getSafeGiveawayStatus() {
-  return {
-    ok: true,
-    running: giveawayState.running,
-    title: normalizeGiveawayTitle(giveawayState.title),
-    startedAt: giveawayState.startedAt,
-    lastCheckAt: giveawayState.lastCheckAt,
-    totalChecks: giveawayState.totalChecks,
-    lastError: giveawayState.lastError,
-    channelLogin: giveawayState.channelLogin,
-    participants: getGiveawayParticipantsList(),
-  };
 }
 
 function getInstantGiveawayParticipantsList() {
@@ -381,298 +261,6 @@ function drawInstantGiveawayWinner() {
   return winner;
 }
 
-function resolveGiveawayHelixConfig() {
-  const credentials = getClientCredentials();
-  const cached = loadCachedAuth();
-  const fallbackModeratorId = String(
-    twitchState.config?.chatSenderId ||
-      TWITCH_BOT_USER_ID ||
-      cached?.broadcasterId ||
-      "",
-  ).trim();
-
-  return {
-    clientId: String(credentials.clientId || "").trim(),
-    accessToken: String(cached?.accessToken || "").trim(),
-    moderatorToken: String(
-      twitchState.config?.chatAccessToken || cached?.accessToken || "",
-    ).trim(),
-    broadcasterId: String(cached?.broadcasterId || "").trim(),
-    moderatorId: fallbackModeratorId,
-    scopes: Array.isArray(cached?.scope)
-      ? cached.scope
-      : String(cached?.scope || "")
-          .split(/\s+/)
-          .filter(Boolean),
-  };
-}
-
-async function checkIsSubscriber(login) {
-  const normalizedLogin = normalizeParticipantName(login);
-  if (!normalizedLogin) {
-    return false;
-  }
-
-  const cached = giveawayState.subscriberCache.get(normalizedLogin);
-  const now = Date.now();
-  if (cached && cached.expiresAt > now) {
-    return cached.value;
-  }
-
-  const helixConfig = resolveGiveawayHelixConfig();
-  if (
-    !helixConfig.clientId ||
-    !helixConfig.accessToken ||
-    !helixConfig.broadcasterId
-  ) {
-    giveawayState.subscriberCache.set(normalizedLogin, {
-      value: false,
-      expiresAt: now + GIVEAWAY_SUB_CACHE_TTL_MS,
-    });
-    return false;
-  }
-
-  try {
-    const usersUrl = new URL("https://api.twitch.tv/helix/users");
-    usersUrl.searchParams.set("login", normalizedLogin);
-    const usersData = await twitchApiRequest(usersUrl.toString(), helixConfig);
-    const userId = String(usersData?.data?.[0]?.id || "").trim();
-
-    if (!userId) {
-      giveawayState.subscriberCache.set(normalizedLogin, {
-        value: false,
-        expiresAt: now + GIVEAWAY_SUB_CACHE_TTL_MS,
-      });
-      return false;
-    }
-
-    const subsUrl = new URL("https://api.twitch.tv/helix/subscriptions/user");
-    subsUrl.searchParams.set("broadcaster_id", helixConfig.broadcasterId);
-    subsUrl.searchParams.set("user_id", userId);
-
-    const subsData = await twitchApiRequest(subsUrl.toString(), helixConfig);
-    const isSubscriber =
-      Array.isArray(subsData?.data) && subsData.data.length > 0;
-
-    giveawayState.subscriberCache.set(normalizedLogin, {
-      value: isSubscriber,
-      expiresAt: now + GIVEAWAY_SUB_CACHE_TTL_MS,
-    });
-
-    return isSubscriber;
-  } catch (err) {
-    giveawayState.subscriberCache.set(normalizedLogin, {
-      value: false,
-      expiresAt: now + GIVEAWAY_SUB_CACHE_TTL_MS,
-    });
-
-    if (err?.status !== 403 && err?.status !== 404) {
-      console.error(
-        `[SORTEIO] falha ao verificar sub para ${normalizedLogin}: ${err instanceof Error ? err.message : String(err)}`,
-      );
-    }
-
-    return false;
-  }
-}
-
-async function fetchCurrentChatters(channelLogin) {
-  const helixConfig = resolveGiveawayHelixConfig();
-  if (
-    !helixConfig.clientId ||
-    !helixConfig.moderatorToken ||
-    !helixConfig.broadcasterId ||
-    !helixConfig.moderatorId
-  ) {
-    throw new Error(
-      "Configuracao incompleta para ler chatters via Helix (clientId/token/broadcaster/moderator)",
-    );
-  }
-
-  const normalizedScopes = (helixConfig.scopes || []).map((scope) =>
-    String(scope || "")
-      .trim()
-      .toLowerCase(),
-  );
-  if (!normalizedScopes.includes(TWITCH_CHATTERS_SCOPE)) {
-    const scopeList = normalizedScopes.length
-      ? normalizedScopes.join(", ")
-      : "(nenhum escopo no token salvo)";
-    console.error(
-      `[SORTEIO] token sem escopo necessario '${TWITCH_CHATTERS_SCOPE}'. Escopos atuais: ${scopeList}`,
-    );
-    throw new Error(
-      `Token sem escopo '${TWITCH_CHATTERS_SCOPE}'. Reconecte a Twitch para atualizar permissoes.`,
-    );
-  }
-
-  const names = new Set();
-
-  let cursor = "";
-  let pages = 0;
-  const maxPages = 20;
-
-  while (pages < maxPages) {
-    const url = new URL("https://api.twitch.tv/helix/chat/chatters");
-    url.searchParams.set("broadcaster_id", helixConfig.broadcasterId);
-    url.searchParams.set("moderator_id", helixConfig.moderatorId);
-    url.searchParams.set("first", "1000");
-    if (cursor) {
-      url.searchParams.set("after", cursor);
-    }
-
-    const res = await fetch(url.toString(), {
-      headers: {
-        "Client-Id": helixConfig.clientId,
-        Authorization: `Bearer ${helixConfig.moderatorToken}`,
-      },
-    });
-
-    if (!res.ok) {
-      const errorBody = await res.text().catch(() => "");
-      console.error(
-        `[SORTEIO] erro ao ler chatters Helix: status=${res.status} broadcasterId=${helixConfig.broadcasterId} moderatorId=${helixConfig.moderatorId} url=${url.toString()} body=${errorBody.slice(0, 500)}`,
-      );
-      if (res.status === 401) {
-        console.error(
-          `[SORTEIO] dica 401: valide o token em https://id.twitch.tv/oauth2/validate e confirme o escopo '${TWITCH_CHATTERS_SCOPE}'.`,
-        );
-      }
-      throw new Error(`Falha ao ler chatters via Helix (status ${res.status})`);
-    }
-
-    const data = await res.json();
-    const list = Array.isArray(data?.data) ? data.data : [];
-
-    for (const entry of list) {
-      const login = normalizeParticipantName(entry?.user_login || "");
-      if (login) {
-        names.add(login);
-      }
-    }
-
-    cursor = String(data?.pagination?.cursor || "").trim();
-    pages += 1;
-    if (!cursor) {
-      break;
-    }
-  }
-
-  return names;
-}
-
-async function runGiveawayCheck(options = {}) {
-  const initialBonus = Boolean(options?.initialBonus);
-  const currentChatters = await fetchCurrentChatters(
-    giveawayState.channelLogin,
-  );
-
-  giveawayState.totalChecks += 1;
-  giveawayState.lastCheckAt = new Date().toISOString();
-  giveawayState.lastError = "";
-
-  const participants = giveawayState.participantsByLogin;
-
-  for (const login of Object.keys(participants)) {
-    const participant = participants[login];
-    participant.inChatNow = false;
-  }
-
-  for (const login of currentChatters) {
-    const existing = participants[login];
-    if (!existing) {
-      participants[login] = {
-        login,
-        name: login,
-        points: initialBonus ? GIVEAWAY_INITIAL_POINTS : 0,
-        tickets: 0,
-        isSubscriber: false,
-        inChatNow: true,
-        consecutiveChecks: 1,
-      };
-      continue;
-    }
-
-    existing.inChatNow = true;
-    existing.consecutiveChecks += 1;
-  }
-
-  for (const login of Object.keys(participants)) {
-    const participant = participants[login];
-
-    if (!participant.inChatNow) {
-      participant.consecutiveChecks = 0;
-      continue;
-    }
-
-    if (participant.consecutiveChecks % GIVEAWAY_POINTS_CHECKS !== 0) {
-      continue;
-    }
-
-    const isSubscriber = await checkIsSubscriber(login);
-    participant.isSubscriber = isSubscriber;
-    participant.points += isSubscriber
-      ? GIVEAWAY_POINTS_SUB
-      : GIVEAWAY_POINTS_NORMAL;
-  }
-
-  saveGiveawayStateToDisk();
-}
-
-function stopGiveawayMonitor() {
-  if (giveawayState.intervalId) {
-    clearInterval(giveawayState.intervalId);
-    giveawayState.intervalId = null;
-  }
-
-  giveawayState.running = false;
-  giveawayState.startedAt = "";
-  giveawayState.lastError = "";
-  saveGiveawayStateToDisk();
-}
-
-async function startGiveawayMonitor(customTitle = "") {
-  const cached = loadCachedAuth();
-  const channelLogin = normalizeParticipantName(cached?.login);
-  if (!channelLogin) {
-    throw new Error("Conecte a Twitch antes de iniciar o sorteio");
-  }
-
-  if (customTitle) {
-    giveawayState.title = normalizeGiveawayTitle(customTitle);
-  }
-
-  giveawayState.channelLogin = channelLogin;
-  giveawayState.lastError = "";
-  const isFirstRunEver = giveawayState.totalChecks === 0;
-
-  if (giveawayState.running) {
-    saveGiveawayStateToDisk();
-    return;
-  }
-
-  giveawayState.running = true;
-  giveawayState.startedAt = new Date().toISOString();
-
-  giveawayState.intervalId = setInterval(() => {
-    runGiveawayCheck().catch((err) => {
-      giveawayState.lastError =
-        err instanceof Error ? err.message : "Falha no monitor de sorteio";
-      console.error(`[SORTEIO] erro no monitor: ${giveawayState.lastError}`);
-    });
-  }, GIVEAWAY_CHECK_INTERVAL_MS);
-
-  await runGiveawayCheck({ initialBonus: isFirstRunEver }).catch((err) => {
-    giveawayState.lastError =
-      err instanceof Error ? err.message : "Falha no monitor de sorteio";
-    console.error(
-      `[SORTEIO] erro no monitor (checagem inicial): ${giveawayState.lastError}`,
-    );
-  });
-
-  saveGiveawayStateToDisk();
-}
-
 function ensureAuthCacheDir() {
   if (!fs.existsSync(AUTH_CACHE_DIR)) {
     fs.mkdirSync(AUTH_CACHE_DIR, { recursive: true });
@@ -736,6 +324,29 @@ function getClientCredentials() {
     TWITCH_CLIENT_SECRET || cached?.clientSecret || "",
   ).trim();
   return { clientId, clientSecret };
+}
+
+function getTwitchConfig() {
+  const credentials = getClientCredentials();
+  const cached = loadCachedAuth();
+
+  return {
+    clientId: String(credentials.clientId || "").trim(),
+    accessToken: String(cached?.accessToken || "").trim(),
+    broadcasterId: String(cached?.broadcasterId || "").trim(),
+    moderatorId: String(cached?.broadcasterId || "").trim(),
+    chatSenderId: String(
+      TWITCH_BOT_USER_ID || cached?.broadcasterId || "",
+    ).trim(),
+    chatAccessToken: String(
+      TWITCH_BOT_ACCESS_TOKEN || cached?.accessToken || "",
+    ).trim(),
+    scopes: Array.isArray(cached?.scope)
+      ? cached.scope
+      : String(cached?.scope || "")
+          .split(/\s+/)
+          .filter(Boolean),
+  };
 }
 
 function saveCachedAuth(authData) {
@@ -1086,7 +697,6 @@ let importedItems = loadImportedItemsFromFile();
 
 ensureRuntimeDirs();
 migrateRuntimeDataFiles();
-loadGiveawayStateFromDisk();
 
 function normalizeImportedItems(rawItems) {
   if (!Array.isArray(rawItems)) return [];
@@ -1492,7 +1102,7 @@ function createTwitchAuthorizeUrl() {
   url.searchParams.set("redirect_uri", TWITCH_REDIRECT_URI);
   url.searchParams.set(
     "scope",
-    `channel:read:redemptions channel:manage:redemptions user:write:chat chat:read channel:read:subscriptions ${TWITCH_CHATTERS_SCOPE}`,
+    "channel:read:redemptions channel:manage:redemptions user:write:chat chat:read channel:read:subscriptions",
   );
   url.searchParams.set("state", state);
   url.searchParams.set("force_verify", "true");
@@ -1524,15 +1134,12 @@ async function exchangeCodeForToken(code) {
 }
 
 async function fetchAuthenticatedUser(clientId, accessToken) {
-  const res = await fetch("https://api.twitch.tv/helix/users", {
-    headers: {
-      "Client-Id": clientId,
-      Authorization: `Bearer ${accessToken}`,
-    },
+  const data = await twitchApiRequest("https://api.twitch.tv/helix/users", {
+    clientId,
+    accessToken,
   });
 
-  const data = await res.json();
-  if (!res.ok || !Array.isArray(data.data) || data.data.length === 0) {
+  if (!Array.isArray(data.data) || data.data.length === 0) {
     throw new Error(`Falha ao ler usuario Twitch: ${JSON.stringify(data)}`);
   }
 
@@ -1597,31 +1204,17 @@ async function handleTwitchOAuthCallback(req, res) {
 }
 
 async function twitchApiRequest(url, config, options = {}) {
-  const res = await fetch(url, {
-    method: options.method || "GET",
-    headers: {
-      "Client-Id": config.clientId,
-      Authorization: `Bearer ${config.accessToken}`,
-      ...(options.body
-        ? { "Content-Type": "application/json; charset=utf-8" }
-        : {}),
-    },
-    ...(options.body ? { body: JSON.stringify(options.body) } : {}),
+  return baseTwitchApiRequest(url, config, options, {
+    onUnauthorized: invalidateTwitchSession,
   });
+}
 
-  if (!res.ok) {
-    const text = await res.text();
-    const error = new Error(`Twitch API ${res.status}: ${text}`);
-    error.status = res.status;
-
-    if (res.status === 401) {
-      invalidateTwitchSession(error.message);
-    }
-
-    throw error;
-  }
-
-  return res.json();
+async function twitchRequest(url, config, options = {}) {
+  return baseTwitchRequest(url, config, options, {
+    getFallbackConfig: getTwitchConfig,
+    apiRequest: (requestUrl, requestConfig, requestOptions) =>
+      twitchApiRequest(requestUrl, requestConfig, requestOptions),
+  });
 }
 
 async function sendChatMessage(config, message) {
@@ -1636,27 +1229,21 @@ async function sendChatMessage(config, message) {
     throw new Error("Sender do chat nao configurado (id/token)");
   }
 
-  const res = await fetch("https://api.twitch.tv/helix/chat/messages", {
-    method: "POST",
-    headers: {
-      "Client-Id": config.clientId,
-      Authorization: `Bearer ${senderToken}`,
-      "Content-Type": "application/json; charset=utf-8",
+  const response = await twitchRequest(
+    "https://api.twitch.tv/helix/chat/messages",
+    {
+      clientId: config.clientId,
+      accessToken: senderToken,
     },
-    body: JSON.stringify({
-      broadcaster_id: config.broadcasterId,
-      sender_id: senderId,
-      message: String(message || "").trim(),
-    }),
-  });
-
-  const response = await res.json();
-
-  if (!res.ok) {
-    throw new Error(
-      `Falha ao enviar mensagem no chat: ${JSON.stringify(response)}`,
-    );
-  }
+    {
+      method: "POST",
+      body: {
+        broadcaster_id: config.broadcasterId,
+        sender_id: senderId,
+        message: String(message || "").trim(),
+      },
+    },
+  );
 
   if (response?.data?.[0]?.is_sent === false) {
     const dropReason =
@@ -1775,18 +1362,9 @@ async function deleteRewardById(config, rewardId) {
   deleteUrl.searchParams.set("broadcaster_id", config.broadcasterId);
   deleteUrl.searchParams.set("id", id);
 
-  const res = await fetch(deleteUrl.toString(), {
+  await twitchRequest(deleteUrl.toString(), config, {
     method: "DELETE",
-    headers: {
-      "Client-Id": config.clientId,
-      Authorization: `Bearer ${config.accessToken}`,
-    },
   });
-
-  if (!res.ok) {
-    const text = await res.text();
-    throw new Error(`Falha ao apagar reward anterior (${res.status}): ${text}`);
-  }
 }
 
 async function createReward(
@@ -4301,7 +3879,6 @@ async function handleApiRoutes(req, res, cleanPath) {
   }
 
   if (cleanPath === "/api/twitch/logout" && req.method === "POST") {
-    stopGiveawayMonitor();
     resetTwitchSessionState();
     clearCachedTwitchSession();
     sendJson(res, 200, { ok: true, status: getSafeTwitchStatus() });
@@ -4309,7 +3886,6 @@ async function handleApiRoutes(req, res, cleanPath) {
   }
 
   if (cleanPath === "/api/twitch/reset-cache" && req.method === "POST") {
-    stopGiveawayMonitor();
     resetTwitchSessionState();
     clearCachedAuth();
     sendJson(res, 200, {
@@ -4593,57 +4169,6 @@ async function handleApiRoutes(req, res, cleanPath) {
             : "Erro ao enviar mensagem no chat",
       });
     }
-    return true;
-  }
-
-  if (cleanPath === "/api/sorteio/status" && req.method === "GET") {
-    sendJson(res, 200, getSafeGiveawayStatus());
-    return true;
-  }
-
-  if (cleanPath === "/api/sorteio/title" && req.method === "POST") {
-    try {
-      const body = await readJsonBody(req);
-      if (giveawayState.running) {
-        sendJson(res, 400, {
-          ok: false,
-          message: "Encerrar o sorteio antes de alterar o titulo",
-        });
-        return true;
-      }
-
-      giveawayState.title = normalizeGiveawayTitle(body?.title);
-      saveGiveawayStateToDisk();
-      sendJson(res, 200, getSafeGiveawayStatus());
-      return true;
-    } catch (err) {
-      sendJson(res, 400, {
-        ok: false,
-        message:
-          err instanceof Error ? err.message : "Erro ao atualizar titulo",
-      });
-      return true;
-    }
-  }
-
-  if (cleanPath === "/api/sorteio/start" && req.method === "POST") {
-    try {
-      const body = await readJsonBody(req);
-      await startGiveawayMonitor(String(body?.title || ""));
-      sendJson(res, 200, getSafeGiveawayStatus());
-      return true;
-    } catch (err) {
-      sendJson(res, 400, {
-        ok: false,
-        message: err instanceof Error ? err.message : "Erro ao iniciar sorteio",
-      });
-      return true;
-    }
-  }
-
-  if (cleanPath === "/api/sorteio/stop" && req.method === "POST") {
-    stopGiveawayMonitor();
-    sendJson(res, 200, getSafeGiveawayStatus());
     return true;
   }
 
