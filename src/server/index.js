@@ -56,6 +56,11 @@ const GACHAPON_REWARD_TYPE = "gachapon";
 const SOUND_EFFECT_REWARD_TYPE = "soundEffect";
 const SOUND_EFFECT_TAG = "[soundEffect]";
 const INSTANT_GIVEAWAY_JOIN_COMMAND = "!join";
+const CAMPAIGN_GIVEAWAY_TICKET_COMMAND = "!tickets";
+const CAMPAIGN_GIVEAWAY_POINTS_PER_CHECK = 10;
+const CAMPAIGN_GIVEAWAY_CHECK_INTERVAL_MS = 300000; // 5 minutos
+const CAMPAIGN_GIVEAWAY_TICKET_COST = 100;
+const CAMPAIGN_GIVEAWAY_MIN_POINTS_FOR_TICKET = 100;
 
 const PUBLIC_FILES = new Set([
   "commands.html",
@@ -65,6 +70,7 @@ const PUBLIC_FILES = new Set([
   "overlay.html",
   "cardReward.html",
   "sorteioInstantaneo.html",
+  "sorteioCampanha.html",
   "soundEffects.html",
   "twitchCallback.html",
 ]);
@@ -103,6 +109,17 @@ const instantGiveawayState = {
   lastJoinAt: "",
   lastDrawAt: "",
   lastError: "",
+};
+
+const campaignGiveawayState = {
+  running: false,
+  participantsByLogin: {},
+  winner: "",
+  startedAt: "",
+  lastDrawAt: "",
+  lastError: "",
+  lastSyncAt: "",
+  syncIntervalId: null,
 };
 
 const DEFAULT_CARD_STYLE_CONFIG = {
@@ -231,9 +248,17 @@ function registerInstantGiveawayJoin(senderName, loginName, messageText) {
     return;
   }
 
+  addInstantGiveawayParticipant(senderName, loginName);
+}
+
+function addInstantGiveawayParticipant(senderName, loginName) {
+  if (!instantGiveawayState.running) {
+    return false;
+  }
+
   const login = normalizeParticipantName(loginName || senderName);
   if (!login) {
-    return;
+    return false;
   }
 
   const displayName = String(senderName || login).trim() || login;
@@ -246,19 +271,262 @@ function registerInstantGiveawayJoin(senderName, loginName, messageText) {
   }
 
   instantGiveawayState.lastJoinAt = new Date().toISOString();
+  return true;
 }
 
-function drawInstantGiveawayWinner() {
+function drawInstantGiveawayWinner(preferredLogin = "") {
   const participants = getInstantGiveawayParticipantsList();
   if (participants.length === 0) {
     throw new Error("Nenhum participante entrou com !join");
   }
 
-  const index = Math.floor(Math.random() * participants.length);
-  const winner = participants[index];
+  const requestedLogin = normalizeParticipantName(preferredLogin);
+  const winner =
+    participants.find((participant) => participant.login === requestedLogin) ||
+    participants[Math.floor(Math.random() * participants.length)];
   instantGiveawayState.winner = winner.name;
   instantGiveawayState.lastDrawAt = new Date().toISOString();
   return winner;
+}
+
+function getCampaignGiveawayParticipantsList() {
+  const entries = Object.values(
+    campaignGiveawayState.participantsByLogin || {},
+  );
+  return entries.sort((a, b) => a.name.localeCompare(b.name, "pt-BR"));
+}
+
+function getSafeCampaignGiveawayStatus() {
+  const ticketCmd = getTicketCommandInfo();
+  return {
+    ok: true,
+    running: campaignGiveawayState.running,
+    ticketCommand: ticketCmd?.name || "tickets",
+    ticketCommandEnabled: ticketCmd?.enabled || false,
+    ticketCommandAliases: ticketCmd?.aliases || [],
+    startedAt: campaignGiveawayState.startedAt,
+    lastDrawAt: campaignGiveawayState.lastDrawAt,
+    lastError: campaignGiveawayState.lastError,
+    winner: campaignGiveawayState.winner,
+    participants: getCampaignGiveawayParticipantsList(),
+  };
+}
+
+function resetCampaignGiveawayParticipants() {
+  campaignGiveawayState.participantsByLogin = {};
+  campaignGiveawayState.winner = "";
+  campaignGiveawayState.lastDrawAt = "";
+  campaignGiveawayState.lastSyncAt = "";
+}
+
+function getTicketCommandInfo() {
+  const registry = loadCommandsRegistry();
+  const ticketCommand = registry.systemCommands.find(
+    (cmd) => cmd.key === "tickets",
+  );
+  return ticketCommand || null;
+}
+
+function isTicketCommandMessage(messageText) {
+  const ticketCmd = getTicketCommandInfo();
+  if (!ticketCmd || !ticketCmd.enabled) {
+    return false;
+  }
+
+  const message = String(messageText || "")
+    .trim()
+    .toLowerCase();
+
+  const tokens = [ticketCmd.name, ...(ticketCmd.aliases || [])];
+  return tokens.some((token) => {
+    const prefix = `!${token}`;
+    return message.startsWith(prefix);
+  });
+}
+
+async function syncCampaignGiveawayFromChat(config) {
+  if (!campaignGiveawayState.running) {
+    return;
+  }
+
+  if (!config?.clientId || !config?.broadcasterId || !config?.accessToken) {
+    return;
+  }
+
+  try {
+    const chatters = await fetchTwitchChatters(config);
+
+    // Adiciona pontos para todos que ainda estão no chat
+    for (const chatter of chatters) {
+      const login = normalizeParticipantName(chatter?.login || "");
+      if (!login) continue;
+
+      const displayName = String(chatter?.name || login).trim() || login;
+
+      if (!campaignGiveawayState.participantsByLogin[login]) {
+        campaignGiveawayState.participantsByLogin[login] = {
+          login,
+          name: displayName,
+          points: CAMPAIGN_GIVEAWAY_POINTS_PER_CHECK,
+          tickets: 0,
+          joinedAt: new Date().toISOString(),
+        };
+      } else {
+        campaignGiveawayState.participantsByLogin[login].points +=
+          CAMPAIGN_GIVEAWAY_POINTS_PER_CHECK;
+      }
+    }
+
+    campaignGiveawayState.lastSyncAt = new Date().toISOString();
+  } catch (err) {
+    console.error(
+      `[CAMPAIGN] erro ao sincronizar chatters: ${err instanceof Error ? err.message : String(err)}`,
+    );
+  }
+}
+
+async function fetchTwitchChatters(config) {
+  if (!config?.clientId || !config?.broadcasterId || !config?.accessToken) {
+    throw new Error("Conecte a Twitch antes de listar chatters");
+  }
+
+  const chattersUrl = new URL("https://api.twitch.tv/helix/chat/chatters");
+  chattersUrl.searchParams.set("broadcaster_id", config.broadcasterId);
+  chattersUrl.searchParams.set(
+    "moderator_id",
+    config.chatSenderId || config.broadcasterId,
+  );
+
+  const chattersData = await twitchApiRequest(chattersUrl.toString(), config);
+  const chatters = Array.isArray(chattersData?.data) ? chattersData.data : [];
+
+  return chatters
+    .map((chatter) => {
+      const login = normalizeParticipantName(chatter?.user_login || "");
+      if (!login) return null;
+
+      const name = String(chatter?.user_name || login).trim() || login;
+      return {
+        login,
+        name,
+      };
+    })
+    .filter(Boolean);
+}
+
+function startCampaignGiveaway() {
+  ensureChatListenerForInstantGiveaway();
+  campaignGiveawayState.running = true;
+  campaignGiveawayState.startedAt = new Date().toISOString();
+  campaignGiveawayState.lastError = "";
+  resetCampaignGiveawayParticipants();
+
+  // Sincroniza a cada 5 minutos
+  if (campaignGiveawayState.syncIntervalId) {
+    clearInterval(campaignGiveawayState.syncIntervalId);
+  }
+
+  const config = buildApiTwitchConfig();
+  syncCampaignGiveawayFromChat(config);
+
+  campaignGiveawayState.syncIntervalId = setInterval(() => {
+    const currentConfig = buildApiTwitchConfig();
+    syncCampaignGiveawayFromChat(currentConfig);
+  }, CAMPAIGN_GIVEAWAY_CHECK_INTERVAL_MS);
+}
+
+function stopCampaignGiveaway() {
+  campaignGiveawayState.running = false;
+
+  if (campaignGiveawayState.syncIntervalId) {
+    clearInterval(campaignGiveawayState.syncIntervalId);
+    campaignGiveawayState.syncIntervalId = null;
+  }
+
+  if (!twitchState.running && !instantGiveawayState.running) {
+    stopChatListener();
+  }
+}
+
+function drawCampaignGiveawayWinner() {
+  const participants = getCampaignGiveawayParticipantsList();
+  if (participants.length === 0) {
+    throw new Error("Nenhum participante ativo no sorteio");
+  }
+
+  // Usa quantidade de tickets como peso
+  const totalTickets = participants.reduce(
+    (acc, p) => acc + (p.tickets || 0),
+    0,
+  );
+
+  let winner;
+  if (totalTickets > 0) {
+    // Sorteia ponderado por tickets
+    const rand = Math.random() * totalTickets;
+    let acc = 0;
+    for (const p of participants) {
+      acc += p.tickets || 0;
+      if (rand <= acc) {
+        winner = p;
+        break;
+      }
+    }
+    winner = winner || participants[0];
+  } else {
+    // Se ninguém tem tickets, sorteia entre todos
+    const index = Math.floor(Math.random() * participants.length);
+    winner = participants[index];
+  }
+
+  campaignGiveawayState.winner = winner.name;
+  campaignGiveawayState.lastDrawAt = new Date().toISOString();
+  return winner;
+}
+
+function processCampaignTicketCommand(senderName, messageText) {
+  if (!campaignGiveawayState.running) {
+    return null;
+  }
+
+  const message = String(messageText || "").trim();
+  if (!isTicketCommandMessage(message)) {
+    return null;
+  }
+
+  const login = normalizeParticipantName(senderName || "");
+  if (!login) {
+    return null;
+  }
+
+  // Extrai quantidade de tickets (ex: "!tickets 2" -> 2)
+  const match = /^![a-z0-9_]+(?:\s+(\d+))?/.exec(message);
+  const quantity = match && match[1] ? Number.parseInt(match[1], 10) : 1;
+
+  if (!Number.isFinite(quantity) || quantity < 1 || quantity > 100) {
+    return null;
+  }
+
+  const participant = campaignGiveawayState.participantsByLogin[login];
+  if (!participant) {
+    return null;
+  }
+
+  const totalCost = quantity * CAMPAIGN_GIVEAWAY_TICKET_COST;
+  if (participant.points < totalCost) {
+    return {
+      message: `Pontos insuficientes para comprar ${quantity} ticket${quantity !== 1 ? "s" : ""}. Pontos restantes: ${participant.points}!`,
+      success: false,
+    };
+  }
+
+  participant.points -= totalCost;
+  participant.tickets += quantity;
+
+  return {
+    message: `@${senderName} comprou ${quantity} ticket${quantity !== 1 ? "s" : ""} por ${totalCost} pontos! Pontos restantes: ${participant.points}.`,
+    success: true,
+  };
 }
 
 function ensureAuthCacheDir() {
@@ -1102,7 +1370,7 @@ function createTwitchAuthorizeUrl() {
   url.searchParams.set("redirect_uri", TWITCH_REDIRECT_URI);
   url.searchParams.set(
     "scope",
-    "channel:read:redemptions channel:manage:redemptions user:write:chat chat:read channel:read:subscriptions",
+    "channel:read:redemptions channel:manage:redemptions user:write:chat chat:read channel:read:subscriptions moderator:read:chatters",
   );
   url.searchParams.set("state", state);
   url.searchParams.set("force_verify", "true");
@@ -1565,6 +1833,14 @@ const SYSTEM_COMMAND_DEFINITIONS = [
     name: "join",
     responsePreview:
       "Participa do sorteio instantâneo digitando !join no chat.",
+    allowCustomText: false,
+    defaultText: "",
+  },
+  {
+    key: "tickets",
+    name: "tickets",
+    responsePreview:
+      "Compra tickets para o sorteio em campanha usando pontos acumulados.",
     allowCustomText: false,
     defaultText: "",
   },
@@ -2546,6 +2822,14 @@ async function tryHandleChatCommand(config, senderName, messageText) {
       return;
     }
 
+    if (definition?.key === "tickets") {
+      const result = processCampaignTicketCommand(sender, message);
+      if (result) {
+        await sendChatMessage(config, result.message);
+      }
+      return;
+    }
+
     if (definition?.allowCustomText) {
       await executeTextSystemCommand(config, systemCommand, {
         streamer,
@@ -3134,7 +3418,9 @@ function stopTwitchMonitor() {
 function resetTwitchSessionState(options = {}) {
   stopTwitchMonitor();
   stopInstantGiveaway();
+  stopCampaignGiveaway();
   resetInstantGiveawayParticipants();
+  resetCampaignGiveawayParticipants();
   twitchState.config = null;
   if (!options.preserveLastError) {
     twitchState.lastError = null;
@@ -4172,6 +4458,24 @@ async function handleApiRoutes(req, res, cleanPath) {
     return true;
   }
 
+  if (cleanPath === "/api/twitch/chatters" && req.method === "GET") {
+    try {
+      const config = buildApiTwitchConfig();
+      const chatters = await fetchTwitchChatters(config);
+      sendJson(res, 200, {
+        ok: true,
+        count: chatters.length,
+        chatters,
+      });
+    } catch (err) {
+      sendJson(res, 400, {
+        ok: false,
+        message: err instanceof Error ? err.message : "Erro ao listar chatters",
+      });
+    }
+    return true;
+  }
+
   if (cleanPath === "/api/sorteio-instantaneo/status" && req.method === "GET") {
     sendJson(res, 200, getSafeInstantGiveawayStatus());
     return true;
@@ -4202,9 +4506,139 @@ async function handleApiRoutes(req, res, cleanPath) {
 
   if (cleanPath === "/api/sorteio-instantaneo/draw" && req.method === "POST") {
     try {
-      const winner = drawInstantGiveawayWinner();
+      const body = await readJsonBody(req);
+      const winner = drawInstantGiveawayWinner(body?.winnerLogin);
       sendJson(res, 200, {
         ...getSafeInstantGiveawayStatus(),
+        winner,
+      });
+      return true;
+    } catch (err) {
+      sendJson(res, 400, {
+        ok: false,
+        message:
+          err instanceof Error ? err.message : "Erro ao sortear participante",
+      });
+      return true;
+    }
+  }
+
+  if (cleanPath === "/api/sorteio-instantaneo/join" && req.method === "POST") {
+    try {
+      const cached = loadCachedAuth();
+      const streamerLogin = String(cached?.login || "")
+        .trim()
+        .toLowerCase();
+      const streamerName = String(
+        cached?.displayName || cached?.login || "Streamer",
+      ).trim();
+
+      if (!streamerLogin) {
+        sendJson(res, 400, {
+          ok: false,
+          message: "Streamer nao identificado. Conecte a Twitch.",
+        });
+        return true;
+      }
+
+      addInstantGiveawayParticipant(streamerName, streamerLogin);
+      sendJson(res, 200, getSafeInstantGiveawayStatus());
+      return true;
+    } catch (err) {
+      sendJson(res, 400, {
+        ok: false,
+        message:
+          err instanceof Error ? err.message : "Erro ao adicionar streamer",
+      });
+      return true;
+    }
+  }
+
+  if (
+    cleanPath === "/api/sorteio-instantaneo/join-batch" &&
+    req.method === "POST"
+  ) {
+    try {
+      const body = await readJsonBody(req);
+      const participants = Array.isArray(body?.participants)
+        ? body.participants
+        : [];
+
+      if (!instantGiveawayState.running) {
+        throw new Error("Inicie o sorteio antes de adicionar participantes");
+      }
+
+      let addedCount = 0;
+      for (const participant of participants) {
+        const name = String(
+          participant?.name ||
+            participant?.user_name ||
+            participant?.login ||
+            "",
+        ).trim();
+        const login = String(
+          participant?.login ||
+            participant?.user_login ||
+            participant?.name ||
+            "",
+        ).trim();
+
+        if (addInstantGiveawayParticipant(name, login)) {
+          addedCount += 1;
+        }
+      }
+
+      sendJson(res, 200, {
+        ...getSafeInstantGiveawayStatus(),
+        addedCount,
+        receivedCount: participants.length,
+      });
+      return true;
+    } catch (err) {
+      sendJson(res, 400, {
+        ok: false,
+        message:
+          err instanceof Error
+            ? err.message
+            : "Erro ao adicionar participantes em lote",
+      });
+      return true;
+    }
+  }
+
+  if (cleanPath === "/api/sorteio-campanha/status" && req.method === "GET") {
+    sendJson(res, 200, getSafeCampaignGiveawayStatus());
+    return true;
+  }
+
+  if (cleanPath === "/api/sorteio-campanha/start" && req.method === "POST") {
+    try {
+      startCampaignGiveaway();
+      sendJson(res, 200, getSafeCampaignGiveawayStatus());
+      return true;
+    } catch (err) {
+      sendJson(res, 400, {
+        ok: false,
+        message:
+          err instanceof Error
+            ? err.message
+            : "Erro ao iniciar sorteio em campanha",
+      });
+      return true;
+    }
+  }
+
+  if (cleanPath === "/api/sorteio-campanha/stop" && req.method === "POST") {
+    stopCampaignGiveaway();
+    sendJson(res, 200, getSafeCampaignGiveawayStatus());
+    return true;
+  }
+
+  if (cleanPath === "/api/sorteio-campanha/draw" && req.method === "POST") {
+    try {
+      const winner = drawCampaignGiveawayWinner();
+      sendJson(res, 200, {
+        ...getSafeCampaignGiveawayStatus(),
         winner,
       });
       return true;

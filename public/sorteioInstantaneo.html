@@ -36,6 +36,12 @@
           </button>
           <button id="btnDraw" class="btn-draw" type="button">Sortear</button>
           <button id="btnStop" class="btn-stop" type="button">Encerrar</button>
+          <button id="btnJoinStreamer" class="btn-join" type="button">
+            Participar!
+          </button>
+          <button id="btnJoinAll" class="btn-join" type="button">
+            Adicionar todos
+          </button>
         </div>
 
         <div id="statusLine" class="status warn">Carregando status...</div>
@@ -62,20 +68,245 @@
       </section>
     </main>
 
+    <div id="drawOverlay" class="draw-overlay" aria-hidden="true">
+      <div class="draw-overlay-backdrop"></div>
+      <div class="draw-overlay-stage">
+        <div class="draw-overlay-hint">Clique na tela para voltar</div>
+        <div class="draw-track-shell">
+          <div id="drawRibbon" class="draw-ribbon"></div>
+        </div>
+      </div>
+    </div>
+
     <script>
       const btnStart = document.getElementById("btnStart");
       const btnDraw = document.getElementById("btnDraw");
       const btnStop = document.getElementById("btnStop");
+      const btnJoinStreamer = document.getElementById("btnJoinStreamer");
+      const btnJoinAll = document.getElementById("btnJoinAll");
       const runBadge = document.getElementById("runBadge");
       const statusLine = document.getElementById("statusLine");
       const winnerName = document.getElementById("winnerName");
       const rowsMount = document.getElementById("rowsMount");
       const cmdDescription = document.getElementById("cmdDescription");
       const cmdWarning = document.getElementById("cmdWarning");
+      const drawOverlay = document.getElementById("drawOverlay");
+      const drawRibbon = document.getElementById("drawRibbon");
+
+      let drawAnimation = null;
+      let pendingWinner = null;
+      let drawLocked = false;
+      let drawCycleToken = 0;
 
       function setStatus(text, cls = "warn") {
         statusLine.className = `status ${cls}`;
         statusLine.textContent = text;
+      }
+
+      function setActionButtonsDisabled(disabled) {
+        btnStart.disabled = disabled || btnStart.disabled;
+        btnDraw.disabled = disabled || btnDraw.disabled;
+        btnStop.disabled = disabled || btnStop.disabled;
+      }
+
+      function updateActionButtonsFromStatus(data) {
+        const running = Boolean(data?.running);
+        const shouldLock = drawLocked;
+        btnStart.disabled = running || shouldLock;
+        btnStop.disabled = !running || shouldLock;
+        btnDraw.disabled = !running || shouldLock;
+      }
+
+      function normalizeParticipant(entry) {
+        const login = String(entry?.login || entry?.user_login || "")
+          .trim()
+          .toLowerCase();
+        const name = String(
+          entry?.name || entry?.user_name || login || "",
+        ).trim();
+
+        return {
+          login,
+          name: name || login,
+        };
+      }
+
+      function pickRandomParticipant(participants) {
+        if (!participants.length) return null;
+        return participants[Math.floor(Math.random() * participants.length)];
+      }
+
+      function renderDrawName(name, options = {}) {
+        const isWinner = Boolean(options?.isWinner);
+        drawRibbon.innerHTML = "";
+
+        const chip = document.createElement("span");
+        chip.className = "draw-chip";
+        chip.textContent = String(name || "-").trim() || "-";
+
+        if (isWinner) {
+          chip.classList.add("winner-chip-final");
+        } else {
+          chip.classList.add("draw-chip-cycle");
+        }
+
+        drawRibbon.appendChild(chip);
+      }
+
+      function waitMs(ms) {
+        return new Promise((resolve) => setTimeout(resolve, ms));
+      }
+
+      function resetDrawOverlay() {
+        if (drawAnimation) {
+          drawAnimation.cancel();
+          drawAnimation = null;
+        }
+
+        drawCycleToken += 1;
+
+        drawOverlay.classList.remove("open", "settled", "closing");
+        drawOverlay.setAttribute("aria-hidden", "true");
+        drawRibbon.innerHTML = "";
+        drawOverlay.onclick = null;
+        pendingWinner = null;
+        drawLocked = false;
+        updateActionButtonsFromStatus({
+          running: Boolean(runBadge.classList.contains("on")),
+        });
+      }
+
+      async function waitForNextPaint() {
+        await new Promise((resolve) => requestAnimationFrame(() => resolve()));
+        await new Promise((resolve) => requestAnimationFrame(() => resolve()));
+      }
+
+      function settleDrawOverlay() {
+        drawOverlay.classList.add("settled");
+        const winnerChip = drawRibbon.querySelector(".draw-chip");
+        if (winnerChip) {
+          winnerChip.classList.remove("winner-chip-reveal");
+          // Forca reflow para reiniciar a animacao quando necessario.
+          void winnerChip.offsetWidth;
+          winnerChip.classList.add("winner-chip-final");
+          winnerChip.classList.add("winner-chip-reveal");
+          winnerChip.classList.remove("draw-chip-cycle");
+        }
+      }
+
+      function closeDrawOverlay() {
+        if (!pendingWinner) {
+          return;
+        }
+
+        drawOverlay.classList.add("closing");
+        drawOverlay.setAttribute("aria-hidden", "true");
+
+        setTimeout(() => {
+          drawOverlay.classList.remove("open", "settled", "closing");
+          drawRibbon.innerHTML = "";
+          winnerName.textContent = pendingWinner.name;
+          setStatus(`Vencedor sorteado: ${pendingWinner.name}.`, "ok");
+          drawLocked = false;
+          pendingWinner = null;
+          updateActionButtonsFromStatus({
+            running: Boolean(runBadge.classList.contains("on")),
+          });
+          refreshStatus().catch(() => {});
+        }, 280);
+      }
+
+      async function playDrawSequence(participants, winner) {
+        if (!participants.length || !winner) {
+          throw new Error("Nenhum participante disponível para sortear");
+        }
+
+        drawLocked = true;
+        updateActionButtonsFromStatus({ running: true });
+        drawOverlay.classList.remove("closing");
+        drawOverlay.classList.add("open");
+        drawOverlay.setAttribute("aria-hidden", "false");
+        setStatus("Sorteio em andamento...", "warn");
+
+        await waitForNextPaint();
+
+        const runToken = ++drawCycleToken;
+        const winnerLogin = String(winner?.login || "")
+          .trim()
+          .toLowerCase();
+        const winnerIndex = participants.findIndex(
+          (entry) =>
+            String(entry?.login || "")
+              .trim()
+              .toLowerCase() === winnerLogin,
+        );
+
+        if (winnerIndex < 0) {
+          throw new Error("Falha ao localizar vencedor na lista");
+        }
+
+        const startIndex = Math.floor(Math.random() * participants.length);
+        const fullCycles = Math.max(8, Math.ceil(18 / participants.length));
+        const distanceToWinner =
+          (winnerIndex - startIndex + participants.length) %
+          participants.length;
+        const totalSteps =
+          fullCycles * participants.length + distanceToWinner + 1;
+
+        for (let step = 0; step < totalSteps; step += 1) {
+          if (runToken !== drawCycleToken) {
+            return;
+          }
+
+          const currentIndex = (startIndex + step) % participants.length;
+          const currentParticipant = participants[currentIndex];
+          const isLast = step === totalSteps - 1;
+
+          renderDrawName(
+            currentParticipant?.name || currentParticipant?.login || "-",
+            {
+              isWinner: false,
+            },
+          );
+
+          if (isLast) {
+            break;
+          }
+
+          const progress = step / Math.max(totalSteps - 1, 1);
+          const eased = Math.pow(progress, 1.9);
+          const stepDelay = Math.round(65 + 220 * eased);
+          await waitMs(stepDelay);
+        }
+
+        // Mostra o ultimo nome "normal" antes do destaque final.
+        await waitMs(360);
+
+        settleDrawOverlay();
+
+        pendingWinner = winner;
+        drawOverlay.onclick = async () => {
+          if (!pendingWinner) {
+            return;
+          }
+
+          const selectedLogin = String(pendingWinner.login || "").trim();
+          try {
+            const data = await postJson("/api/sorteio-instantaneo/draw", {
+              winnerLogin: selectedLogin,
+            });
+            const resolvedWinner =
+              data?.winner?.name || data?.winner?.login || pendingWinner.name;
+            pendingWinner = {
+              ...pendingWinner,
+              name: String(resolvedWinner || pendingWinner.name),
+            };
+          } catch {
+            // Se o servidor falhar, mantém o nome escolhido na animação.
+          }
+
+          closeDrawOverlay();
+        };
       }
 
       async function postJson(url, payload) {
@@ -98,6 +329,19 @@
           cache: "no-store",
         });
         return res.json();
+      }
+
+      async function fetchChatters() {
+        const res = await fetch("/api/twitch/chatters", {
+          cache: "no-store",
+        });
+        const data = await res.json();
+
+        if (!res.ok || data.ok === false) {
+          throw new Error(data.message || "Falha ao buscar chatters");
+        }
+
+        return Array.isArray(data.chatters) ? data.chatters : [];
       }
 
       function renderRows(participants) {
@@ -150,6 +394,7 @@
         winnerName.textContent = winner || "-";
 
         renderRows(data?.participants);
+        updateActionButtonsFromStatus(data);
       }
 
       async function refreshStatus() {
@@ -168,14 +413,29 @@
 
       btnDraw.addEventListener("click", async () => {
         try {
-          const data = await postJson("/api/sorteio-instantaneo/draw");
-          winnerName.textContent = String(
-            data?.winner?.name || data?.winner || "-",
-          );
-          setStatus("Sorteio realizado com sucesso.", "ok");
-          await refreshStatus();
+          const statusData = await fetchStatus();
+          const participants = Array.isArray(statusData?.participants)
+            ? statusData.participants
+                .map(normalizeParticipant)
+                .filter((entry) => entry.login && entry.name)
+            : [];
+
+          if (!statusData?.running) {
+            throw new Error("Inicie o sorteio antes de sortear");
+          }
+
+          if (participants.length === 0) {
+            throw new Error("Nenhum participante disponível para sortear");
+          }
+
+          const winner = pickRandomParticipant(participants);
+          await playDrawSequence(participants, winner);
         } catch (err) {
           setStatus(`Erro ao sortear: ${err.message}`, "danger");
+          drawLocked = false;
+          updateActionButtonsFromStatus(
+            await fetchStatus().catch(() => ({ running: false })),
+          );
         }
       });
 
@@ -186,6 +446,48 @@
         } catch (err) {
           setStatus(`Erro ao encerrar: ${err.message}`, "danger");
         }
+      });
+
+      btnJoinStreamer.addEventListener("click", async () => {
+        try {
+          await postJson("/api/sorteio-instantaneo/join");
+          await refreshStatus();
+          setStatus("Você entrou no sorteio!", "ok");
+        } catch (err) {
+          setStatus(`Erro ao participar: ${err.message}`, "danger");
+        }
+      });
+
+      btnJoinAll.addEventListener("click", async () => {
+        try {
+          const chatters = await fetchChatters();
+
+          if (chatters.length === 0) {
+            throw new Error("Nenhum chatter encontrado no canal");
+          }
+
+          const data = await postJson("/api/sorteio-instantaneo/join-batch", {
+            participants: chatters,
+          });
+          await refreshStatus();
+
+          const addedCount = Number(data?.addedCount || 0);
+          const receivedCount = Number(data?.receivedCount || chatters.length);
+          setStatus(
+            `${addedCount} participante(s) adicionado(s) de ${receivedCount} chatter(s).`,
+            "ok",
+          );
+        } catch (err) {
+          setStatus(`Erro ao adicionar todos: ${err.message}`, "danger");
+        }
+      });
+
+      drawOverlay.addEventListener("click", (event) => {
+        if (!pendingWinner) {
+          return;
+        }
+
+        closeDrawOverlay();
       });
 
       refreshStatus();

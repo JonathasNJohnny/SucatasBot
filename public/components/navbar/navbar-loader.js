@@ -94,6 +94,18 @@ function applyAffiliateFeatureVisibility(mount, status) {
   });
 }
 
+function isTwitchConnected(status) {
+  return Boolean(String(status?.auth?.broadcasterId || "").trim());
+}
+
+function applyTwitchConnectionFeatureVisibility(mount, status) {
+  const connected = isTwitchConnected(status);
+
+  mount.querySelectorAll("[data-requires-twitch]").forEach((item) => {
+    item.style.display = connected ? "" : "none";
+  });
+}
+
 function renderTwitchIdentity(mount, status, hasConnectionError = false) {
   const chip = mount.querySelector("[data-twitch-chip]");
   const icon = mount.querySelector("[data-user-icon]");
@@ -145,15 +157,18 @@ async function setupTwitchIdentity(mount) {
     if (!res.ok) {
       renderTwitchIdentity(mount, null, true);
       applyAffiliateFeatureVisibility(mount, null);
+      applyTwitchConnectionFeatureVisibility(mount, null);
       return;
     }
 
     const status = await res.json();
     renderTwitchIdentity(mount, status, false);
     applyAffiliateFeatureVisibility(mount, status);
+    applyTwitchConnectionFeatureVisibility(mount, status);
   } catch {
     renderTwitchIdentity(mount, null, true);
     applyAffiliateFeatureVisibility(mount, null);
+    applyTwitchConnectionFeatureVisibility(mount, null);
   }
 }
 

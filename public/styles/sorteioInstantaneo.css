@@ -85,6 +85,11 @@ button:disabled {
   color: var(--text-inverse);
 }
 
+.btn-join {
+  background: linear-gradient(135deg, #6366f1, #7c3aed);
+  color: var(--text-inverse);
+}
+
 .status {
   margin-top: 14px;
   border-radius: 10px;
@@ -149,4 +154,219 @@ tbody tr:last-child td {
 
 .empty {
   color: var(--muted);
+}
+
+.draw-overlay {
+  position: fixed;
+  inset: 0;
+  z-index: 40;
+  display: none;
+  align-items: center;
+  justify-content: center;
+  opacity: 0;
+  transition: opacity 280ms ease;
+}
+
+.draw-overlay.open {
+  display: flex;
+  opacity: 1;
+}
+
+.draw-overlay.closing {
+  opacity: 0;
+}
+
+.draw-overlay-backdrop {
+  position: absolute;
+  inset: 0;
+  background:
+    radial-gradient(
+      circle at center,
+      rgba(8, 10, 20, 0.26),
+      rgba(7, 9, 18, 0.88)
+    ),
+    rgba(7, 9, 18, 0.8);
+  backdrop-filter: blur(18px) saturate(1.2);
+}
+
+.draw-overlay-stage {
+  position: relative;
+  width: min(1120px, calc(100vw - 28px));
+  height: min(70vh, 560px);
+  border: 1px solid color-mix(in srgb, var(--line) 60%, transparent);
+  border-radius: 28px;
+  background: linear-gradient(
+    180deg,
+    rgba(10, 13, 24, 0.46),
+    rgba(13, 18, 32, 0.68)
+  );
+  box-shadow:
+    0 30px 80px rgba(0, 0, 0, 0.52),
+    inset 0 1px 0 rgba(255, 255, 255, 0.06);
+  overflow: hidden;
+}
+
+.draw-overlay-stage::before {
+  content: "";
+  position: absolute;
+  inset: 0;
+  background:
+    linear-gradient(
+      90deg,
+      transparent 0%,
+      rgba(255, 255, 255, 0.06) 50%,
+      transparent 100%
+    ),
+    radial-gradient(
+      circle at center,
+      rgba(255, 255, 255, 0.08),
+      transparent 58%
+    );
+  pointer-events: none;
+}
+
+.draw-overlay-hint {
+  position: absolute;
+  left: 50%;
+  bottom: 18px;
+  transform: translateX(-50%);
+  z-index: 2;
+  padding: 8px 14px;
+  border-radius: 999px;
+  background: rgba(255, 255, 255, 0.06);
+  border: 1px solid rgba(255, 255, 255, 0.08);
+  color: rgba(245, 248, 255, 0.78);
+  font-size: 12px;
+  letter-spacing: 0.04em;
+  text-transform: uppercase;
+}
+
+.draw-track-shell {
+  position: absolute;
+  inset: 0;
+  overflow: hidden;
+}
+
+.draw-ribbon {
+  position: absolute;
+  left: 50%;
+  top: 50%;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 0;
+  width: 100%;
+  padding: 0 24px;
+  white-space: nowrap;
+  transform: translate3d(-50%, -50%, 0);
+  will-change: transform, filter;
+}
+
+.draw-chip {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  min-width: 120px;
+  padding: 16px 20px;
+  border-radius: 999px;
+  border: 1px solid rgba(255, 255, 255, 0.14);
+  background: linear-gradient(
+    180deg,
+    rgba(19, 24, 38, 0.96),
+    rgba(10, 13, 23, 0.88)
+  );
+  color: #ffffff;
+  font-size: 18px;
+  font-weight: 800;
+  letter-spacing: 0.01em;
+  box-shadow: 0 8px 24px rgba(0, 0, 0, 0.22);
+  transform-origin: center;
+  transition:
+    transform 240ms ease,
+    opacity 240ms ease,
+    filter 240ms ease,
+    background 240ms ease,
+    box-shadow 240ms ease;
+}
+
+.draw-overlay.settled .draw-chip {
+  opacity: 1;
+  filter: saturate(1);
+}
+
+.draw-chip-cycle {
+  animation: draw-name-pulse 260ms ease;
+}
+
+@keyframes draw-name-pulse {
+  0% {
+    opacity: 0.42;
+    transform: scale(0.9);
+    filter: blur(2px) saturate(0.78);
+  }
+  100% {
+    opacity: 1;
+    transform: scale(1);
+    filter: blur(0) saturate(1);
+  }
+}
+
+.draw-overlay.settled .draw-chip.winner-chip-final {
+  opacity: 1;
+  filter: saturate(1.1);
+  transform: scale(1.42);
+  background: linear-gradient(
+    135deg,
+    rgba(83, 121, 255, 0.96),
+    rgba(32, 170, 121, 0.94)
+  );
+  box-shadow:
+    0 0 0 1px rgba(255, 255, 255, 0.1),
+    0 24px 60px rgba(50, 98, 255, 0.36);
+}
+
+.draw-overlay.settled .draw-chip.winner-chip-final.winner-chip-reveal {
+  animation: draw-winner-reveal 460ms cubic-bezier(0.18, 0.88, 0.22, 1);
+}
+
+@keyframes draw-winner-reveal {
+  0% {
+    transform: scale(1);
+    filter: saturate(1);
+    box-shadow: 0 8px 24px rgba(0, 0, 0, 0.22);
+  }
+  48% {
+    transform: scale(1.18);
+    filter: saturate(1.28);
+    box-shadow: 0 16px 38px rgba(50, 98, 255, 0.26);
+  }
+  100% {
+    transform: scale(1.42);
+    filter: saturate(1.1);
+    box-shadow:
+      0 0 0 1px rgba(255, 255, 255, 0.1),
+      0 24px 60px rgba(50, 98, 255, 0.36);
+  }
+}
+
+.draw-overlay.closing .draw-overlay-stage {
+  transform: scale(0.98);
+  transition: transform 280ms ease;
+}
+
+.draw-overlay.closing .draw-overlay-backdrop {
+  backdrop-filter: blur(0px) saturate(1);
+}
+
+@media (max-width: 760px) {
+  .draw-overlay-stage {
+    height: min(76vh, 540px);
+    border-radius: 22px;
+  }
+
+  .draw-chip {
+    min-width: 96px;
+    padding: 13px 16px;
+    font-size: 15px;
+  }
 }

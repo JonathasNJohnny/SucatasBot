@@ -18,13 +18,13 @@
           >Painel de Controle</a
         >
       </li>
-      <li>
+      <li data-requires-twitch>
         <a href="/commands.html" data-nav="commands.html">Comandos</a>
       </li>
-      <li class="dropdown">
+      <li class="dropdown" data-requires-twitch>
         <a
           class="dropdown-toggle"
-          data-nav="cardCustomization.html, importItems.html, cardReward.html, sorteioInstantaneo.html, soundEffects.html"
+          data-nav="cardCustomization.html, importItems.html, cardReward.html, sorteioInstantaneo.html, sorteioCampanha.html, soundEffects.html"
           >Interacoes</a
         >
 
@@ -58,6 +58,11 @@
               Sorteios
             </button>
             <ul class="submenu-items">
+              <li data-affiliate-required>
+                <a href="/sorteioCampanha.html" data-nav="sorteioCampanha.html"
+                  >Sorteio em Campanha</a
+                >
+              </li>
               <li>
                 <a
                   href="/sorteioInstantaneo.html"
