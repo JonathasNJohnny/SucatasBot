@@ -6,6 +6,7 @@ const {
   ipcMain,
   dialog,
   shell,
+  globalShortcut,
 } = require("electron");
 const { autoUpdater } = require("electron-updater");
 const path = require("path");
@@ -25,6 +26,254 @@ let tray = null;
 let updateWindow = null;
 let isQuitting = false;
 const hasSingleInstanceLock = app.requestSingleInstanceLock();
+const CLIP_SHORTCUTS_FILE = "clip-shortcuts.json";
+const DEFAULT_CLIP_SHORTCUTS = {
+  clip30: "Control+Alt+1",
+  clip60: "Control+Alt+2",
+};
+let currentClipShortcuts = { ...DEFAULT_CLIP_SHORTCUTS };
+let registeredClipAccelerators = [];
+let clipShortcutsEnabled = true;
+
+function normalizeShortcutToken(token) {
+  const raw = String(token || "").trim();
+  if (!raw) {
+    return "";
+  }
+
+  if (raw === "¹") {
+    return "1";
+  }
+  if (raw === "²") {
+    return "2";
+  }
+  if (raw === "³") {
+    return "3";
+  }
+
+  const lower = raw.toLowerCase();
+  if (lower === "ctrl" || lower === "control") {
+    return "Control";
+  }
+  if (lower === "alt" || lower === "option") {
+    return "Alt";
+  }
+  if (lower === "shift") {
+    return "Shift";
+  }
+  if (
+    lower === "meta" ||
+    lower === "win" ||
+    lower === "windows" ||
+    lower === "super"
+  ) {
+    return "Super";
+  }
+  if (lower === "cmd" || lower === "command") {
+    return "Command";
+  }
+  if (lower === "cmdorctrl" || lower === "commandorcontrol") {
+    return "CommandOrControl";
+  }
+  if (raw.length === 1) {
+    return raw.toUpperCase();
+  }
+  return raw.charAt(0).toUpperCase() + raw.slice(1).toLowerCase();
+}
+
+function normalizeAccelerator(value, fallback) {
+  const raw = String(value || "").trim();
+  const fallbackRaw = String(fallback || "").trim();
+  const source = raw || fallbackRaw;
+
+  const tokens = source
+    .split("+")
+    .map((token) => normalizeShortcutToken(token))
+    .filter(Boolean);
+
+  if (!tokens.length) {
+    return fallbackRaw;
+  }
+
+  const key = tokens[tokens.length - 1];
+  const modifiers = tokens.slice(0, -1);
+  const orderedModifiers = [
+    "Control",
+    "Alt",
+    "Shift",
+    "Super",
+    "Command",
+    "CommandOrControl",
+  ].filter((modifier) => modifiers.includes(modifier));
+
+  return orderedModifiers.length ? `${orderedModifiers.join("+")}+${key}` : key;
+}
+
+function resolveClipShortcuts(shortcuts) {
+  const resolved = {
+    clip30: normalizeAccelerator(
+      shortcuts?.clip30,
+      DEFAULT_CLIP_SHORTCUTS.clip30,
+    ),
+    clip60: normalizeAccelerator(
+      shortcuts?.clip60,
+      DEFAULT_CLIP_SHORTCUTS.clip60,
+    ),
+  };
+
+  if (resolved.clip30 === resolved.clip60) {
+    throw new Error("Os atalhos de 30s e 60s precisam ser diferentes.");
+  }
+
+  return resolved;
+}
+
+function getClipShortcutsFilePath() {
+  return path.join(app.getPath("userData"), CLIP_SHORTCUTS_FILE);
+}
+
+function loadClipShortcutsFromDisk() {
+  const shortcutsPath = getClipShortcutsFilePath();
+  if (!fs.existsSync(shortcutsPath)) {
+    return { ...DEFAULT_CLIP_SHORTCUTS };
+  }
+
+  try {
+    const raw = fs.readFileSync(shortcutsPath, "utf8");
+    const parsed = JSON.parse(raw);
+    return resolveClipShortcuts(parsed);
+  } catch (err) {
+    console.error("Falha ao carregar atalhos de clipe:", err);
+    return { ...DEFAULT_CLIP_SHORTCUTS };
+  }
+}
+
+function saveClipShortcutsToDisk(shortcuts) {
+  const shortcutsPath = getClipShortcutsFilePath();
+  fs.writeFileSync(shortcutsPath, JSON.stringify(shortcuts, null, 2), "utf8");
+}
+
+function unregisterClipShortcuts() {
+  for (const accelerator of registeredClipAccelerators) {
+    globalShortcut.unregister(accelerator);
+  }
+  registeredClipAccelerators = [];
+}
+
+async function triggerClipFromShortcut(duration) {
+  const payload = {
+    duration,
+    title: `Clipe ${duration}s`,
+  };
+
+  try {
+    const response = await fetch("http://localhost:49382/api/twitch/clip", {
+      method: "POST",
+      headers: {
+        "Content-Type": "application/json",
+      },
+      body: JSON.stringify(payload),
+    });
+
+    const result = await response.json().catch(() => null);
+    if (!response.ok || result?.ok === false) {
+      const reason = result?.message || `HTTP ${response.status}`;
+      console.error(`Falha ao criar clipe via atalho (${duration}s):`, reason);
+    }
+  } catch (err) {
+    console.error(`Erro ao acionar clipe via atalho (${duration}s):`, err);
+  }
+}
+
+function registerClipShortcuts(shortcuts) {
+  unregisterClipShortcuts();
+
+  const failed = [];
+  const registrations = [
+    { accelerator: shortcuts.clip30, duration: 30 },
+    { accelerator: shortcuts.clip60, duration: 60 },
+  ];
+
+  for (const entry of registrations) {
+    const registered = globalShortcut.register(entry.accelerator, () => {
+      if (!clipShortcutsEnabled) {
+        return;
+      }
+      void triggerClipFromShortcut(entry.duration);
+    });
+
+    if (registered) {
+      registeredClipAccelerators.push(entry.accelerator);
+    } else {
+      failed.push(entry.accelerator);
+    }
+  }
+
+  return { failed };
+}
+
+function applyClipShortcuts(shortcuts, options = {}) {
+  const persist = Boolean(options.persist);
+  const resolved = resolveClipShortcuts(shortcuts);
+  const registration = registerClipShortcuts(resolved);
+  currentClipShortcuts = resolved;
+
+  if (persist) {
+    saveClipShortcutsToDisk(resolved);
+  }
+
+  return {
+    shortcuts: resolved,
+    failed: registration.failed,
+  };
+}
+
+function setClipShortcutsEnabled(value) {
+  clipShortcutsEnabled = Boolean(value);
+  return {
+    ok: true,
+    enabled: clipShortcutsEnabled,
+  };
+}
+
+function setupClipShortcutsIpcHandlers() {
+  ipcMain.handle("get-clip-shortcuts", async () => {
+    return {
+      ok: true,
+      shortcuts: currentClipShortcuts,
+    };
+  });
+
+  ipcMain.handle("save-clip-shortcuts", async (event, shortcuts) => {
+    try {
+      const result = applyClipShortcuts(shortcuts, { persist: true });
+      return {
+        ok: true,
+        shortcuts: result.shortcuts,
+        failed: result.failed,
+      };
+    } catch (err) {
+      return {
+        ok: false,
+        message: err instanceof Error ? err.message : "Falha ao salvar atalhos",
+        shortcuts: currentClipShortcuts,
+      };
+    }
+  });
+
+  ipcMain.handle("set-clip-shortcuts-enabled", async (event, enabled) => {
+    return setClipShortcutsEnabled(enabled);
+  });
+}
+
+function initializeClipShortcuts() {
+  const diskShortcuts = loadClipShortcutsFromDisk();
+  const result = applyClipShortcuts(diskShortcuts, { persist: false });
+
+  if (result.failed.length) {
+    console.warn("Atalhos globais nao registrados:", result.failed.join(", "));
+  }
+}
 
 // Detecta primeira execução
 const FIRST_RUN_CHECK_FILE = path.join(
@@ -444,6 +693,8 @@ const { contextBridge, ipcRenderer } = require('electron');
 
 contextBridge.exposeInMainWorld('electron', {
   saveConfig: (data) => ipcRenderer.invoke('save-config', data),
+  getClipShortcuts: () => ipcRenderer.invoke('get-clip-shortcuts'),
+  saveClipShortcuts: (shortcuts) => ipcRenderer.invoke('save-clip-shortcuts', shortcuts),
 });
   `;
 
@@ -459,6 +710,11 @@ function createWindowsAfterSetup() {
     width: 900,
     height: 700,
     icon: path.join(__dirname, "..", "..", "icon.png"),
+    webPreferences: {
+      preload: path.join(__dirname, "preload.js"),
+      nodeIntegration: false,
+      contextIsolation: true,
+    },
   });
 
   mainWindow.setTitle("Sucatas Bot");
@@ -491,6 +747,8 @@ if (!hasSingleInstanceLock) {
 
       createPreloadFile();
       const preloadPath = path.join(__dirname, "preload.js");
+      setupClipShortcutsIpcHandlers();
+      initializeClipShortcuts();
 
       const hasClientCredentials = hasClientCredentialsInCache();
 
@@ -540,6 +798,8 @@ if (!hasSingleInstanceLock) {
 
   app.on("before-quit", () => {
     isQuitting = true;
+    unregisterClipShortcuts();
+    globalShortcut.unregisterAll();
   });
 
   // teste new version

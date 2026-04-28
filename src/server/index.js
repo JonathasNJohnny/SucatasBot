@@ -8,6 +8,13 @@ const {
   baseTwitchApiRequest,
   baseTwitchRequest,
 } = require("./services/twitch-http.service");
+const {
+  parseClipDuration,
+  createTwitchClip,
+  fetchBroadcasterLiveStream,
+  buildClipCommandTitle,
+  executeClipSystemCommand,
+} = require("./services/clip.service");
 require("dotenv").config();
 
 const PORT = 49382;
@@ -1844,6 +1851,14 @@ const SYSTEM_COMMAND_DEFINITIONS = [
     allowCustomText: false,
     defaultText: "",
   },
+  {
+    key: "clip",
+    name: "clip",
+    responsePreview:
+      "Cria clipe de 30s da live. Uso: !clip ou !clip <titulo customizado>",
+    allowCustomText: false,
+    defaultText: "",
+  },
 ];
 
 function getSystemCommandDefinitionByKey(key) {
@@ -2826,6 +2841,28 @@ async function tryHandleChatCommand(config, senderName, messageText) {
       const result = processCampaignTicketCommand(sender, message);
       if (result) {
         await sendChatMessage(config, result.message);
+      }
+      return;
+    }
+
+    if (definition?.key === "clip") {
+      try {
+        await executeClipSystemCommand(
+          config,
+          {
+            streamer,
+            sender,
+            user,
+            args,
+            message,
+          },
+          { sendChatMessage, twitchRequest },
+        );
+      } catch (err) {
+        await sendChatMessage(
+          config,
+          `Erro ao clipar: ${err instanceof Error ? err.message : String(err)}`,
+        );
       }
       return;
     }
@@ -4399,6 +4436,85 @@ async function handleApiRoutes(req, res, cleanPath) {
   if (cleanPath === "/api/twitch/stop" && req.method === "POST") {
     stopTwitchMonitor();
     sendJson(res, 200, { ok: true, status: getSafeTwitchStatus() });
+    return true;
+  }
+
+  if (cleanPath === "/api/twitch/clip" && req.method === "POST") {
+    try {
+      const body = await readJsonBody(req);
+      const cached = loadCachedAuth();
+      const credentials = getClientCredentials();
+      const config = twitchState.config || {
+        clientId: credentials.clientId,
+        broadcasterId: String(cached?.broadcasterId || "").trim(),
+        accessToken: String(cached?.accessToken || "").trim(),
+        chatSenderId: String(
+          TWITCH_BOT_USER_ID || cached?.broadcasterId || "",
+        ).trim(),
+        chatAccessToken: String(
+          TWITCH_BOT_ACCESS_TOKEN || cached?.accessToken || "",
+        ).trim(),
+      };
+
+      if (!config.clientId || !config.broadcasterId || !config.accessToken) {
+        sendJson(res, 400, {
+          ok: false,
+          message: "Conecte com a Twitch antes de criar clipes",
+        });
+        return true;
+      }
+
+      const streamStatus = await fetchBroadcasterLiveStream(
+        config,
+        twitchRequest,
+      );
+      if (!streamStatus.isLive) {
+        const offlineMessage =
+          "Nao da pra criar clipe com a live offline. Entre ao vivo e tente novamente.";
+        await sendChatMessage(config, offlineMessage);
+        sendJson(res, 409, {
+          ok: false,
+          message: offlineMessage,
+        });
+        return true;
+      }
+
+      const requestedDuration = Number(body.duration || 30);
+      const duration = parseClipDuration(requestedDuration, 30);
+      const clipTitle = String(body.title || "").trim() || `Clipe ${duration}s`;
+      const createdClip = await createTwitchClip(
+        config,
+        requestedDuration,
+        clipTitle,
+        twitchRequest,
+      );
+      const durationNote =
+        requestedDuration > 60
+          ? "O Twitch limita clipes a 60s, então o pedido de 90s foi enviado com 60s."
+          : `Clipe de ${duration}s solicitado.`;
+      const clipUrl = createdClip.clipId
+        ? `https://clips.twitch.tv/${createdClip.clipId}`
+        : createdClip.editUrl;
+      const chatMessage = `Novo clipe (${duration}s): ${clipUrl}`;
+
+      await sendChatMessage(config, chatMessage);
+
+      sendJson(res, 202, {
+        ok: true,
+        message: durationNote,
+        clipId: createdClip.clipId,
+        clipUrl,
+        editUrl: createdClip.editUrl,
+        chatMessage,
+        requestedDuration,
+        duration: createdClip.duration,
+      });
+    } catch (err) {
+      sendJson(res, 400, {
+        ok: false,
+        message: err instanceof Error ? err.message : "Erro ao criar clipe",
+      });
+    }
     return true;
   }
 

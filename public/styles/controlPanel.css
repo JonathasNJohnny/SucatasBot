@@ -162,6 +162,93 @@ input {
   margin-top: 16px;
 }
 
+.clip-actions {
+  margin-top: 10px;
+}
+
+.shortcut-panel {
+  margin-top: 16px;
+  padding-top: 12px;
+  border-top: 1px solid var(--line);
+}
+
+.shortcut-panel h2 {
+  margin: 0 0 8px;
+  font-size: 17px;
+}
+
+.shortcut-list {
+  margin-top: 8px;
+  display: grid;
+  gap: 12px;
+}
+
+.shortcut-row {
+  display: grid;
+  gap: 6px;
+}
+
+.shortcut-grid {
+  display: grid;
+  grid-template-columns: auto minmax(95px, 130px) auto 1fr;
+  gap: 10px 12px;
+  align-items: center;
+}
+
+@media (max-width: 620px) {
+  .shortcut-grid {
+    grid-template-columns: 1fr;
+  }
+}
+
+.shortcut-grid label {
+  margin: 0;
+}
+
+.shortcut-grid .btn-clip {
+  justify-self: start;
+}
+
+.shortcut-reset-btn {
+  width: 30px;
+  height: 30px;
+  padding: 0;
+  border: 1px solid var(--line);
+  border-radius: 999px;
+  background: var(--surface-subtle);
+  color: var(--text);
+  display: grid;
+  place-items: center;
+  font-size: 16px;
+  line-height: 1;
+  justify-self: center;
+  transition:
+    transform 0.25s ease,
+    background 0.2s ease,
+    border-color 0.2s ease;
+}
+
+.shortcut-reset-btn:hover {
+  transform: rotate(180deg);
+  background: var(--input-bg);
+  border-color: var(--button-primary);
+}
+
+.shortcut-input {
+  font-weight: 700;
+  letter-spacing: 0.02em;
+  cursor: text;
+}
+
+.shortcut-input:focus {
+  border-color: var(--button-primary);
+  box-shadow: 0 0 0 3px rgba(42, 125, 225, 0.2);
+}
+
+.shortcut-progress-wrap {
+  margin-top: 0;
+}
+
 button {
   border: 0;
   border-radius: 10px;
@@ -267,6 +354,21 @@ button {
 
 .btn-test {
   background: var(--button-primary);
+}
+
+.btn-clip {
+  background: var(--button-primary);
+}
+
+.btn-clip:hover {
+  filter: brightness(1.05);
+}
+
+.clip-note {
+  margin-top: 8px;
+  margin-bottom: 0;
+  font-size: 13px;
+  color: var(--muted);
 }
 
 .status {
