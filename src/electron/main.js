@@ -355,6 +355,42 @@ function getDownloadUrl(version, isPortable) {
   return `https://github.com/JonathasNJohnny/SucatasBot/releases/download/v${version}/${artifactName}`;
 }
 
+// Verifica se uma versão portable específica já existe localmente
+function getLocalPortableVersion(version) {
+  try {
+    ensurePortableVersionsDir();
+    const filePath = path.join(
+      getPortableVersionsDir(),
+      `Sucatas-Bot-Portable-${version}.exe`,
+    );
+    if (fs.existsSync(filePath)) {
+      return filePath;
+    }
+    return null;
+  } catch {
+    return null;
+  }
+}
+
+// Renomeia o exe atual para incluir a versão no nome
+function renameCurrentExeToVersion() {
+  try {
+    const currentExe = app.getPath("exe");
+    const dir = path.dirname(currentExe);
+    const currentVersion = app.getVersion();
+    const newName = path.join(
+      dir,
+      `Sucatas-Bot-Portable-${currentVersion}.exe`,
+    );
+
+    if (currentExe !== newName && !fs.existsSync(newName)) {
+      fs.renameSync(currentExe, newName);
+    }
+  } catch (err) {
+    console.warn("Nao foi possivel renomear o exe atual:", err);
+  }
+}
+
 function launchPortableVersion(portableExePath) {
   try {
     const { spawn } = require("child_process");
@@ -381,40 +417,6 @@ async function downloadPortableVersion(version) {
 
   try {
     const https = require("https");
-
-    function getLocalPortableVersion(version) {
-      try {
-        ensurePortableVersionsDir();
-        const filePath = path.join(
-          getPortableVersionsDir(),
-          `Sucatas-Bot-Portable-${version}.exe`,
-        );
-        if (fs.existsSync(filePath)) {
-          return filePath;
-        }
-        return null;
-      } catch {
-        return null;
-      }
-    }
-
-    function renameCurrentExeToVersion() {
-      try {
-        const currentExe = app.getPath("exe");
-        const dir = path.dirname(currentExe);
-        const currentVersion = app.getVersion();
-        const newName = path.join(
-          dir,
-          `Sucatas-Bot-Portable-${currentVersion}.exe`,
-        );
-
-        if (currentExe !== newName && !fs.existsSync(newName)) {
-          fs.renameSync(currentExe, newName);
-        }
-      } catch (err) {
-        console.warn("Nao foi possivel renomear o exe atual:", err);
-      }
-    }
 
     const cleanupPortableVersions = (keepFilePath) => {
       try {
