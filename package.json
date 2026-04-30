@@ -1,6 +1,6 @@
 {
   "name": "sucatasbot",
-  "version": "2.7.5",
+  "version": "2.7.6",
   "description": "Controle Gacha e Bot para Twitch",
   "main": "main.js",
   "productName": "SucatasBot",
