@@ -595,6 +595,29 @@ function isRemoteVersionGreater(currentVersion, remoteVersion) {
   return remote.patch > current.patch;
 }
 
+// ===== UPDATE WINDOW HELPERS =====
+function setUpdateWindowState(state) {
+  if (!updateWindow || updateWindow.isDestroyed()) {
+    return;
+  }
+
+  const payload = JSON.stringify(state || {});
+  updateWindow.webContents
+    .executeJavaScript(`window.__setUpdateState(${payload});`, true)
+    .catch(() => {
+      // Ignora caso a janela esteja fechando durante a atualizacao.
+    });
+}
+
+function closeUpdateWindow() {
+  if (!updateWindow || updateWindow.isDestroyed()) {
+    return;
+  }
+
+  updateWindow.close();
+  updateWindow = null;
+}
+
 function createUpdateWindow() {
   if (updateWindow && !updateWindow.isDestroyed()) {
     return updateWindow;
@@ -623,6 +646,13 @@ function createUpdateWindow() {
   });
 
   updateWindow.once("ready-to-show", () => {
+    if (updateWindow && !updateWindow.isDestroyed()) {
+      updateWindow.show();
+      updateWindow.focus();
+    }
+  });
+
+  updateWindow.webContents.once("did-finish-load", () => {
     if (updateWindow && !updateWindow.isDestroyed()) {
       updateWindow.show();
       updateWindow.focus();
