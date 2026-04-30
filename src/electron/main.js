@@ -382,6 +382,40 @@ async function downloadPortableVersion(version) {
   try {
     const https = require("https");
 
+    function getLocalPortableVersion(version) {
+      try {
+        ensurePortableVersionsDir();
+        const filePath = path.join(
+          getPortableVersionsDir(),
+          `Sucatas-Bot-Portable-${version}.exe`,
+        );
+        if (fs.existsSync(filePath)) {
+          return filePath;
+        }
+        return null;
+      } catch {
+        return null;
+      }
+    }
+
+    function renameCurrentExeToVersion() {
+      try {
+        const currentExe = app.getPath("exe");
+        const dir = path.dirname(currentExe);
+        const currentVersion = app.getVersion();
+        const newName = path.join(
+          dir,
+          `Sucatas-Bot-Portable-${currentVersion}.exe`,
+        );
+
+        if (currentExe !== newName && !fs.existsSync(newName)) {
+          fs.renameSync(currentExe, newName);
+        }
+      } catch (err) {
+        console.warn("Nao foi possivel renomear o exe atual:", err);
+      }
+    }
+
     const cleanupPortableVersions = (keepFilePath) => {
       try {
         ensurePortableVersionsDir();
@@ -505,6 +539,18 @@ async function downloadPortableVersion(version) {
     console.error("Erro ao baixar versao portable:", error);
     throw error;
   }
+}
+
+// Detecta primeira execução
+const FIRST_RUN_CHECK_FILE = path.join(
+  app.getPath("userData"),
+  ".first-run-done",
+);
+function isFirstRun() {
+  return !fs.existsSync(FIRST_RUN_CHECK_FILE);
+}
+function markFirstRunDone() {
+  fs.writeFileSync(FIRST_RUN_CHECK_FILE, "true");
 }
 
 function parseTagVersion(versionLike) {
@@ -677,7 +723,6 @@ function createUpdateWindow() {
 }
 
 async function checkForUpdatesBeforeStart(forceDownload = false) {
-  // Atualizacao automatica funciona em app empacotado com release publicado.
   if (!app.isPackaged) {
     return false;
   }
@@ -685,7 +730,6 @@ async function checkForUpdatesBeforeStart(forceDownload = false) {
   const isPortable = isPortableVersion();
 
   if (!isPortable) {
-    // Para versão instalada, usar electron-updater padrão
     autoUpdater.autoDownload = false;
     autoUpdater.autoInstallOnAppQuit = false;
     autoUpdater.allowPrerelease = false;
@@ -705,7 +749,6 @@ async function checkForUpdatesBeforeStart(forceDownload = false) {
 
       nextVersion = nextVersionParsed.normalized;
 
-      // Atualiza apenas se a proxima tag/version for superior a atual.
       if (!isRemoteVersionGreater(currentVersion, nextVersion)) {
         return false;
       }
@@ -719,7 +762,6 @@ async function checkForUpdatesBeforeStart(forceDownload = false) {
         });
       };
 
-      // Na primeira execução, força o download obrigatoriamente
       if (forceDownload) {
         createUpdateWindow();
         setUpdateWindowState({
@@ -743,7 +785,6 @@ async function checkForUpdatesBeforeStart(forceDownload = false) {
         return true;
       }
 
-      // Em execuções normais, permite usuário escolher
       const { response } = await dialog.showMessageBox({
         type: "info",
         buttons: ["Sim, atualizar", "Nao, continuar"],
@@ -801,13 +842,11 @@ async function checkForUpdatesBeforeStart(forceDownload = false) {
       return false;
     }
   } else {
-    // Para versão portable, usar lógica customizada
     let nextVersion = null;
 
     try {
       const currentVersion = app.getVersion();
 
-      // Verificar atualizações via GitHub
       autoUpdater.autoDownload = false;
       autoUpdater.autoInstallOnAppQuit = false;
       autoUpdater.allowPrerelease = false;
@@ -823,20 +862,24 @@ async function checkForUpdatesBeforeStart(forceDownload = false) {
 
       nextVersion = nextVersionParsed.normalized;
 
-      // Atualiza apenas se a proxima tag/version for superior a atual.
       if (!isRemoteVersionGreater(currentVersion, nextVersion)) {
         return false;
       }
 
-      // Na primeira execução, força o download obrigatoriamente
+      // Verifica se a versão já existe localmente antes de qualquer coisa
+      const localPath = getLocalPortableVersion(nextVersion);
+
       if (forceDownload) {
         createUpdateWindow();
         setUpdateWindowState({
           title: `Atualizando para ${nextVersion}`,
-          detail: "Preparando download da versao completa...",
+          detail: localPath
+            ? "Versao ja disponivel localmente, preparando..."
+            : "Preparando download da versao completa...",
         });
 
-        const portableExePath = await downloadPortableVersion(nextVersion);
+        const portableExePath =
+          localPath || (await downloadPortableVersion(nextVersion));
         markFirstRunDone();
 
         setUpdateWindowState({
@@ -846,13 +889,30 @@ async function checkForUpdatesBeforeStart(forceDownload = false) {
         });
 
         setTimeout(() => {
+          renameCurrentExeToVersion();
           launchPortableVersion(portableExePath);
         }, 500);
 
         return true;
       }
 
-      // Em execuções normais, permite usuário escolher
+      // Se já existe localmente, abre direto sem perguntar e sem baixar
+      if (localPath) {
+        setUpdateWindowState({
+          title: "Atualizacao pronta",
+          detail: "Iniciando a nova versao...",
+          progress: "100%",
+        });
+
+        setTimeout(() => {
+          renameCurrentExeToVersion();
+          launchPortableVersion(localPath);
+        }, 500);
+
+        return true;
+      }
+
+      // Não existe localmente, pergunta ao usuário se quer baixar
       const { response } = await dialog.showMessageBox({
         type: "info",
         buttons: ["Sim, atualizar", "Nao, continuar"],
@@ -883,6 +943,7 @@ async function checkForUpdatesBeforeStart(forceDownload = false) {
       });
 
       setTimeout(() => {
+        renameCurrentExeToVersion();
         launchPortableVersion(portableExePath);
       }, 500);
 
