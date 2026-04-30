@@ -328,13 +328,16 @@ function getLatestPortableVersion() {
       return null;
     }
 
-    // Ordena por versão decrescente
     portableFiles.sort((a, b) => {
-      const aDiff =
-        (b.parsed.major - a.parsed.major) * 1000000 +
-        (b.parsed.minor - a.parsed.minor) * 1000 +
-        (b.parsed.patch - a.parsed.patch);
-      return aDiff;
+      if (a.parsed.major !== b.parsed.major) {
+        return b.parsed.major - a.parsed.major;
+      }
+
+      if (a.parsed.minor !== b.parsed.minor) {
+        return b.parsed.minor - a.parsed.minor;
+      }
+
+      return b.parsed.patch - a.parsed.patch;
     });
 
     return portableFiles[0];
@@ -374,71 +377,134 @@ async function downloadPortableVersion(version) {
   const portableDir = getPortableVersionsDir();
   const fileName = `Sucatas-Bot-Portable-${version}.exe`;
   const filePath = path.join(portableDir, fileName);
+  const tempFilePath = `${filePath}.download`;
 
   try {
     const https = require("https");
-    const fileStream = fs.createWriteStream(filePath);
 
-    return new Promise((resolve, reject) => {
-      https
-        .get(downloadUrl, (response) => {
-          if (response.statusCode !== 200) {
-            fileStream.destroy();
-            fs.unlink(filePath, () => {});
-            reject(
-              new Error(
-                `HTTP ${response.statusCode}: ${response.statusMessage}`,
-              ),
-            );
-            return;
+    const cleanupPortableVersions = (keepFilePath) => {
+      try {
+        ensurePortableVersionsDir();
+        const portableDir = getPortableVersionsDir();
+        const files = fs.readdirSync(portableDir);
+
+        for (const fileName of files) {
+          if (!fileName.endsWith(".exe")) {
+            continue;
           }
 
-          const totalSize = parseInt(response.headers["content-length"], 10);
-          let downloadedSize = 0;
+          const currentFilePath = path.join(portableDir, fileName);
+          if (currentFilePath === keepFilePath) {
+            continue;
+          }
 
-          response.on("data", (chunk) => {
-            downloadedSize += chunk.length;
-            const percent = ((downloadedSize / totalSize) * 100).toFixed(1);
-            setUpdateWindowState({
-              title: `Atualizando para ${version}`,
-              detail: "Baixando atualizacao. Nao feche o app.",
-              progress: `${percent}%`,
+          try {
+            fs.unlinkSync(currentFilePath);
+          } catch (err) {
+            console.warn(
+              "Nao foi possivel remover portable antiga:",
+              currentFilePath,
+              err,
+            );
+          }
+        }
+      } catch (err) {
+        console.warn("Nao foi possivel limpar portables antigas:", err);
+      }
+    };
+
+    const downloadFile = (url, redirectCount = 0) => {
+      return new Promise((resolve, reject) => {
+        https
+          .get(url, (response) => {
+            const statusCode = response.statusCode || 0;
+
+            if (
+              [301, 302, 303, 307, 308].includes(statusCode) &&
+              response.headers.location
+            ) {
+              if (redirectCount >= 5) {
+                response.resume();
+                reject(new Error("Muitos redirecionamentos no download."));
+                return;
+              }
+
+              const redirectedUrl = new URL(
+                response.headers.location,
+                url,
+              ).toString();
+              response.resume();
+              resolve(downloadFile(redirectedUrl, redirectCount + 1));
+              return;
+            }
+
+            if (statusCode !== 200) {
+              response.resume();
+              reject(
+                new Error(`HTTP ${statusCode}: ${response.statusMessage}`),
+              );
+              return;
+            }
+
+            const totalSize = Number(response.headers["content-length"] || 0);
+            let downloadedSize = 0;
+            const fileStream = fs.createWriteStream(tempFilePath);
+
+            response.on("data", (chunk) => {
+              downloadedSize += chunk.length;
+              if (totalSize > 0) {
+                const percent = ((downloadedSize / totalSize) * 100).toFixed(1);
+                setUpdateWindowState({
+                  title: `Atualizando para ${version}`,
+                  detail: "Baixando atualizacao. Nao feche o app.",
+                  progress: `${percent}%`,
+                });
+              }
             });
-          });
 
-          response.pipe(fileStream);
+            fileStream.on("error", (err) => {
+              response.destroy();
+              reject(err);
+            });
 
-          fileStream.on("finish", () => {
-            fileStream.close();
-            resolve(filePath);
-          });
+            response.pipe(fileStream);
 
-          fileStream.on("error", (err) => {
-            fs.unlink(filePath, () => {});
-            reject(err);
-          });
-        })
-        .on("error", (err) => {
-          fs.unlink(filePath, () => {});
-          reject(err);
-        });
-    });
+            fileStream.on("finish", () => {
+              fileStream.close((closeErr) => {
+                if (closeErr) {
+                  reject(closeErr);
+                  return;
+                }
+
+                resolve(tempFilePath);
+              });
+            });
+          })
+          .on("error", reject);
+      });
+    };
+
+    const downloadedTempFile = await downloadFile(downloadUrl);
+
+    if (fs.existsSync(filePath)) {
+      fs.unlinkSync(filePath);
+    }
+
+    fs.renameSync(downloadedTempFile, filePath);
+    cleanupPortableVersions(filePath);
+    return filePath;
   } catch (error) {
+    try {
+      if (fs.existsSync(tempFilePath)) {
+        fs.unlinkSync(tempFilePath);
+      }
+    } catch {
+      // Ignora falha na limpeza do arquivo temporário.
+    }
+
     console.error("Erro ao baixar versao portable:", error);
     throw error;
   }
-}
-
-// Detecta primeira execução
-const FIRST_RUN_CHECK_FILE = path.join(
-  app.getPath("userData"),
-  ".first-run-done",
-);
-function isFirstRun() {
-  return !fs.existsSync(FIRST_RUN_CHECK_FILE);
-}
-function markFirstRunDone() {
-  fs.writeFileSync(FIRST_RUN_CHECK_FILE, "true");
 }
 
 function parseTagVersion(versionLike) {
@@ -516,120 +582,98 @@ function createUpdateWindow() {
   });
 
   const html = `
-    <!DOCTYPE html>
-    <html lang="pt-BR">
-      <head>
-        <meta charset="UTF-8" />
-        <meta name="viewport" content="width=device-width, initial-scale=1.0" />
-        <title>Atualizando</title>
-        <style>
-          * { box-sizing: border-box; }
-          body {
-            margin: 0;
-            width: 100vw;
-            height: 100vh;
-            display: grid;
-            place-items: center;
-            font-family: 'Segoe UI', Tahoma, sans-serif;
-            background: radial-gradient(circle at top, #23395d 0%, #121826 55%, #0b1020 100%);
-            color: #f4f7ff;
-          }
-          .card {
-            width: min(90vw, 390px);
-            padding: 28px 24px;
-            border-radius: 14px;
-            background: rgba(255, 255, 255, 0.08);
-            border: 1px solid rgba(255, 255, 255, 0.16);
-            box-shadow: 0 18px 50px rgba(0, 0, 0, 0.35);
-            backdrop-filter: blur(6px);
-            text-align: center;
-          }
-          .spinner {
-            width: 56px;
-            height: 56px;
-            margin: 0 auto 16px;
-            border-radius: 50%;
-            border: 5px solid rgba(255, 255, 255, 0.25);
-            border-top-color: #6cc6ff;
-            animation: spin 1s linear infinite;
-          }
-          h1 {
-            margin: 0 0 8px;
-            font-size: 20px;
-            font-weight: 700;
-          }
-          p {
-            margin: 0;
-            color: #d6def4;
-            font-size: 14px;
-            line-height: 1.4;
-            min-height: 40px;
-          }
-          .progress {
-            margin-top: 14px;
-            font-weight: 600;
-            color: #9ad9ff;
-            font-size: 13px;
-            min-height: 20px;
-          }
-          @keyframes spin {
-            from { transform: rotate(0deg); }
-            to { transform: rotate(360deg); }
-          }
-        </style>
-      </head>
-      <body>
-        <div class="card">
-          <div class="spinner"></div>
-          <h1 id="title">Preparando atualizacao...</h1>
-          <p id="detail">Aguarde enquanto finalizamos tudo para voce.</p>
-          <div class="progress" id="progress"></div>
-        </div>
-        <script>
-          window.__setUpdateState = (state) => {
-            const title = document.getElementById('title');
-            const detail = document.getElementById('detail');
-            const progress = document.getElementById('progress');
+      <!DOCTYPE html>
+      <html lang="pt-BR">
+        <head>
+          <meta charset="UTF-8" />
+          <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+          <title>Atualizando</title>
+          <style>
+            * { box-sizing: border-box; }
+            body {
+              margin: 0;
+              width: 100vw;
+              height: 100vh;
+              display: grid;
+              place-items: center;
+              font-family: 'Segoe UI', Tahoma, sans-serif;
+              background: radial-gradient(circle at top, #23395d 0%, #121826 55%, #0b1020 100%);
+              color: #f4f7ff;
+            }
+            .card {
+              width: min(90vw, 390px);
+              padding: 28px 24px;
+              border-radius: 14px;
+              background: rgba(255, 255, 255, 0.08);
+              border: 1px solid rgba(255, 255, 255, 0.16);
+              box-shadow: 0 18px 50px rgba(0, 0, 0, 0.35);
+              backdrop-filter: blur(6px);
+              text-align: center;
+            }
+            .spinner {
+              width: 56px;
+              height: 56px;
+              margin: 0 auto 16px;
+              border-radius: 50%;
+              border: 5px solid rgba(255, 255, 255, 0.25);
+              border-top-color: #6cc6ff;
+              animation: spin 1s linear infinite;
+            }
+            h1 {
+              margin: 0 0 8px;
+              font-size: 20px;
+              font-weight: 700;
+            }
+            p {
+              margin: 0;
+              color: #d6def4;
+              font-size: 14px;
+              line-height: 1.4;
+              min-height: 40px;
+            }
+            .progress {
+              margin-top: 14px;
+              font-weight: 600;
+              color: #9ad9ff;
+              font-size: 13px;
+              min-height: 20px;
+            }
+            @keyframes spin {
+              from { transform: rotate(0deg); }
+              to { transform: rotate(360deg); }
+            }
+          </style>
+        </head>
+        <body>
+          <div class="card">
+            <div class="spinner"></div>
+            <h1 id="title">Preparando atualizacao...</h1>
+            <p id="detail">Aguarde enquanto finalizamos tudo para voce.</p>
+            <div class="progress" id="progress"></div>
+          </div>
+          <script>
+            window.__setUpdateState = (state) => {
+              const title = document.getElementById('title');
+              const detail = document.getElementById('detail');
+              const progress = document.getElementById('progress');
 
-            if (state && state.title) {
-              title.textContent = state.title;
-            }
-            if (state && state.detail) {
-              detail.textContent = state.detail;
-            }
-            progress.textContent = state && state.progress ? state.progress : '';
-          };
-        </script>
-      </body>
-    </html>
-  `;
+              if (state && state.title) {
+                title.textContent = state.title;
+              }
+              if (state && state.detail) {
+                detail.textContent = state.detail;
+              }
+              progress.textContent = state && state.progress ? state.progress : '';
+            };
+          </script>
+        </body>
+      </html>
+    `;
 
   updateWindow.loadURL(
     `data:text/html;charset=utf-8,${encodeURIComponent(html)}`,
   );
   return updateWindow;
-}
-
-function setUpdateWindowState(state) {
-  if (!updateWindow || updateWindow.isDestroyed()) {
-    return;
-  }
-
-  const payload = JSON.stringify(state || {});
-  updateWindow.webContents
-    .executeJavaScript(`window.__setUpdateState(${payload});`, true)
-    .catch(() => {
-      // Ignora caso a janela esteja fechando durante a atualizacao.
-    });
-}
-
-function closeUpdateWindow() {
-  if (!updateWindow || updateWindow.isDestroyed()) {
-    return;
-  }
-
-  updateWindow.close();
-  updateWindow = null;
 }
 
 async function checkForUpdatesBeforeStart(forceDownload = false) {
