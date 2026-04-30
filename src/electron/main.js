@@ -275,6 +275,160 @@ function initializeClipShortcuts() {
   }
 }
 
+// ===== PORTABLE VERSION MANAGEMENT =====
+function isPortableVersion() {
+  // Detecta se é versão portable verificando o caminho de execução
+  // Se está em Program Files ou AppData\Local\Programs, é instalado (NSIS)
+  const exePath = app.getPath("exe").toLowerCase();
+  const programFiles = process.env.ProgramFiles?.toLowerCase() || "";
+  const programFilesX86 = process.env["ProgramFiles(x86)"]?.toLowerCase() || "";
+  const appData = path
+    .join(process.env.APPDATA || "", "Local", "Programs")
+    .toLowerCase();
+
+  return (
+    !exePath.startsWith(programFiles) &&
+    !exePath.startsWith(programFilesX86) &&
+    !exePath.startsWith(appData)
+  );
+}
+
+function getPortableVersionsDir() {
+  return path.join(app.getPath("userData"), "portable-versions");
+}
+
+function ensurePortableVersionsDir() {
+  const portableDir = getPortableVersionsDir();
+  if (!fs.existsSync(portableDir)) {
+    fs.mkdirSync(portableDir, { recursive: true });
+  }
+}
+
+function getLatestPortableVersion() {
+  try {
+    ensurePortableVersionsDir();
+    const portableDir = getPortableVersionsDir();
+    const files = fs.readdirSync(portableDir);
+
+    const portableFiles = files
+      .filter((f) => f.endsWith(".exe"))
+      .map((f) => {
+        const match = f.match(/Sucatas-Bot-Portable-(\d+\.\d+\.\d+)\.exe/);
+        if (!match) return null;
+        return {
+          file: f,
+          version: match[1],
+          parsed: parseTagVersion(match[1]),
+          path: path.join(portableDir, f),
+        };
+      })
+      .filter((f) => f && f.parsed);
+
+    if (!portableFiles.length) {
+      return null;
+    }
+
+    // Ordena por versão decrescente
+    portableFiles.sort((a, b) => {
+      const aDiff =
+        (b.parsed.major - a.parsed.major) * 1000000 +
+        (b.parsed.minor - a.parsed.minor) * 1000 +
+        (b.parsed.patch - a.parsed.patch);
+      return aDiff;
+    });
+
+    return portableFiles[0];
+  } catch (err) {
+    console.error("Erro ao procurar versoes portables:", err);
+    return null;
+  }
+}
+
+function getDownloadUrl(version, isPortable) {
+  const artifactName = isPortable
+    ? `Sucatas-Bot-Portable-${version}.exe`
+    : `Sucatas-Bot-Setup-${version}.exe`;
+
+  return `https://github.com/JonathasNJohnny/SucatasBot/releases/download/v${version}/${artifactName}`;
+}
+
+function launchPortableVersion(portableExePath) {
+  try {
+    const { spawn } = require("child_process");
+    spawn(portableExePath, [], {
+      detached: true,
+      stdio: "ignore",
+    }).unref();
+
+    // Fecha a versão atual
+    isQuitting = true;
+    app.quit();
+  } catch (err) {
+    console.error("Erro ao iniciar versao portable:", err);
+  }
+}
+
+async function downloadPortableVersion(version) {
+  // Download customizado para versão portable
+  const downloadUrl = getDownloadUrl(version, true);
+  const portableDir = getPortableVersionsDir();
+  const fileName = `Sucatas-Bot-Portable-${version}.exe`;
+  const filePath = path.join(portableDir, fileName);
+
+  try {
+    const https = require("https");
+    const fileStream = fs.createWriteStream(filePath);
+
+    return new Promise((resolve, reject) => {
+      https
+        .get(downloadUrl, (response) => {
+          if (response.statusCode !== 200) {
+            fileStream.destroy();
+            fs.unlink(filePath, () => {});
+            reject(
+              new Error(
+                `HTTP ${response.statusCode}: ${response.statusMessage}`,
+              ),
+            );
+            return;
+          }
+
+          const totalSize = parseInt(response.headers["content-length"], 10);
+          let downloadedSize = 0;
+
+          response.on("data", (chunk) => {
+            downloadedSize += chunk.length;
+            const percent = ((downloadedSize / totalSize) * 100).toFixed(1);
+            setUpdateWindowState({
+              title: `Atualizando para ${version}`,
+              detail: "Baixando atualizacao. Nao feche o app.",
+              progress: `${percent}%`,
+            });
+          });
+
+          response.pipe(fileStream);
+
+          fileStream.on("finish", () => {
+            fileStream.close();
+            resolve(filePath);
+          });
+
+          fileStream.on("error", (err) => {
+            fs.unlink(filePath, () => {});
+            reject(err);
+          });
+        })
+        .on("error", (err) => {
+          fs.unlink(filePath, () => {});
+          reject(err);
+        });
+    });
+  } catch (error) {
+    console.error("Erro ao baixar versao portable:", error);
+    throw error;
+  }
+}
+
 // Detecta primeira execução
 const FIRST_RUN_CHECK_FILE = path.join(
   app.getPath("userData"),
@@ -484,51 +638,92 @@ async function checkForUpdatesBeforeStart(forceDownload = false) {
     return false;
   }
 
-  autoUpdater.autoDownload = false;
-  autoUpdater.autoInstallOnAppQuit = false;
-  autoUpdater.allowPrerelease = false;
-  autoUpdater.stageUpdates = true; // Economiza espaço em disco durante updates
+  const isPortable = isPortableVersion();
 
-  let nextVersion = null;
+  if (!isPortable) {
+    // Para versão instalada, usar electron-updater padrão
+    autoUpdater.autoDownload = false;
+    autoUpdater.autoInstallOnAppQuit = false;
+    autoUpdater.allowPrerelease = false;
+    autoUpdater.stageUpdates = true;
 
-  try {
-    const currentVersion = app.getVersion();
-    const updateCheckResult = await autoUpdater.checkForUpdates();
-    const nextVersionRaw = updateCheckResult?.updateInfo?.version;
-    const nextVersionParsed = parseTagVersion(nextVersionRaw);
+    let nextVersion = null;
 
-    if (!nextVersionParsed) {
-      return false;
-    }
+    try {
+      const currentVersion = app.getVersion();
+      const updateCheckResult = await autoUpdater.checkForUpdates();
+      const nextVersionRaw = updateCheckResult?.updateInfo?.version;
+      const nextVersionParsed = parseTagVersion(nextVersionRaw);
 
-    nextVersion = nextVersionParsed.normalized;
+      if (!nextVersionParsed) {
+        return false;
+      }
 
-    // Atualiza apenas se a proxima tag/version for superior a atual.
-    if (!isRemoteVersionGreater(currentVersion, nextVersion)) {
-      return false;
-    }
+      nextVersion = nextVersionParsed.normalized;
 
-    const onDownloadProgress = (progressObj) => {
-      const percent = Number(progressObj?.percent || 0).toFixed(1);
-      setUpdateWindowState({
-        title: `Atualizando para ${nextVersion}`,
-        detail: "Baixando atualizacao. Nao feche o app.",
-        progress: `${percent}%`,
+      // Atualiza apenas se a proxima tag/version for superior a atual.
+      if (!isRemoteVersionGreater(currentVersion, nextVersion)) {
+        return false;
+      }
+
+      const onDownloadProgress = (progressObj) => {
+        const percent = Number(progressObj?.percent || 0).toFixed(1);
+        setUpdateWindowState({
+          title: `Atualizando para ${nextVersion}`,
+          detail: "Baixando atualizacao. Nao feche o app.",
+          progress: `${percent}%`,
+        });
+      };
+
+      // Na primeira execução, força o download obrigatoriamente
+      if (forceDownload) {
+        createUpdateWindow();
+        setUpdateWindowState({
+          title: `Atualizando para ${nextVersion}`,
+          detail: "Preparando download da versao completa...",
+        });
+
+        autoUpdater.on("download-progress", onDownloadProgress);
+        await autoUpdater.downloadUpdate();
+        autoUpdater.removeListener("download-progress", onDownloadProgress);
+        markFirstRunDone();
+
+        setUpdateWindowState({
+          title: "Atualizacao pronta",
+          detail: "Reiniciando o app para concluir a instalacao...",
+          progress: "100%",
+        });
+
+        isQuitting = true;
+        autoUpdater.quitAndInstall(false, true);
+        return true;
+      }
+
+      // Em execuções normais, permite usuário escolher
+      const { response } = await dialog.showMessageBox({
+        type: "info",
+        buttons: ["Sim, atualizar", "Nao, continuar"],
+        defaultId: 0,
+        cancelId: 1,
+        noLink: true,
+        title: "Atualizacao disponivel",
+        message: `Nova versao disponivel: ${nextVersion}`,
+        detail: "Deseja atualizar agora antes de abrir o app?",
       });
-    };
 
-    // Na primeira execução, força o download obrigatoriamente
-    if (forceDownload) {
+      if (response !== 0) {
+        return false;
+      }
+
       createUpdateWindow();
       setUpdateWindowState({
         title: `Atualizando para ${nextVersion}`,
-        detail: "Preparando download da versao completa...",
+        detail: "Baixando atualizacao. Nao feche o app.",
       });
 
       autoUpdater.on("download-progress", onDownloadProgress);
-      await autoUpdater.downloadUpdate();
+      const downloadedFiles = await autoUpdater.downloadUpdate();
       autoUpdater.removeListener("download-progress", onDownloadProgress);
-      markFirstRunDone();
 
       setUpdateWindowState({
         title: "Atualizacao pronta",
@@ -539,63 +734,137 @@ async function checkForUpdatesBeforeStart(forceDownload = false) {
       isQuitting = true;
       autoUpdater.quitAndInstall(false, true);
       return true;
-    }
+    } catch (error) {
+      console.error("Falha ao verificar/baixar atualizacao:", error);
+      autoUpdater.removeAllListeners("download-progress");
 
-    // Em execuções normais, permite usuário escolher
-    const { response } = await dialog.showMessageBox({
-      type: "info",
-      buttons: ["Sim, atualizar", "Nao, continuar"],
-      defaultId: 0,
-      cancelId: 1,
-      noLink: true,
-      title: "Atualizacao disponivel",
-      message: `Nova versao disponivel: ${nextVersion}`,
-      detail: "Deseja atualizar agora antes de abrir o app?",
-    });
+      setUpdateWindowState({
+        title: "Falha na atualizacao",
+        detail:
+          "Nao foi possivel atualizar agora. Abrindo o download manual...",
+        progress: "",
+      });
 
-    if (response !== 0) {
+      setTimeout(() => {
+        closeUpdateWindow();
+      }, 1800);
+
+      if (nextVersion) {
+        const downloadUrl = getDownloadUrl(nextVersion, false);
+        await shell.openExternal(downloadUrl);
+      }
+
       return false;
     }
+  } else {
+    // Para versão portable, usar lógica customizada
+    let nextVersion = null;
 
-    createUpdateWindow();
-    setUpdateWindowState({
-      title: `Atualizando para ${nextVersion}`,
-      detail: "Baixando atualizacao. Nao feche o app.",
-    });
+    try {
+      const currentVersion = app.getVersion();
 
-    autoUpdater.on("download-progress", onDownloadProgress);
-    const downloadedFiles = await autoUpdater.downloadUpdate();
-    autoUpdater.removeListener("download-progress", onDownloadProgress);
+      // Verificar atualizações via GitHub
+      autoUpdater.autoDownload = false;
+      autoUpdater.autoInstallOnAppQuit = false;
+      autoUpdater.allowPrerelease = false;
+      autoUpdater.stageUpdates = true;
 
-    setUpdateWindowState({
-      title: "Atualizacao pronta",
-      detail: "Reiniciando o app para concluir a instalacao...",
-      progress: "100%",
-    });
+      const updateCheckResult = await autoUpdater.checkForUpdates();
+      const nextVersionRaw = updateCheckResult?.updateInfo?.version;
+      const nextVersionParsed = parseTagVersion(nextVersionRaw);
 
-    isQuitting = true;
-    autoUpdater.quitAndInstall(false, true);
-    return true;
-  } catch (error) {
-    console.error("Falha ao verificar/baixar atualizacao:", error);
-    autoUpdater.removeAllListeners("download-progress");
+      if (!nextVersionParsed) {
+        return false;
+      }
 
-    setUpdateWindowState({
-      title: "Falha na atualizacao",
-      detail: "Nao foi possivel atualizar agora. Abrindo o download manual...",
-      progress: "",
-    });
+      nextVersion = nextVersionParsed.normalized;
 
-    setTimeout(() => {
-      closeUpdateWindow();
-    }, 1800);
+      // Atualiza apenas se a proxima tag/version for superior a atual.
+      if (!isRemoteVersionGreater(currentVersion, nextVersion)) {
+        return false;
+      }
 
-    if (nextVersion) {
-      const downloadUrl = `https://github.com/JonathasNJohnny/SucatasBot/releases/download/v${nextVersion}/Sucatas-Bot.exe`;
-      await shell.openExternal(downloadUrl);
+      // Na primeira execução, força o download obrigatoriamente
+      if (forceDownload) {
+        createUpdateWindow();
+        setUpdateWindowState({
+          title: `Atualizando para ${nextVersion}`,
+          detail: "Preparando download da versao completa...",
+        });
+
+        const portableExePath = await downloadPortableVersion(nextVersion);
+        markFirstRunDone();
+
+        setUpdateWindowState({
+          title: "Atualizacao pronta",
+          detail: "Iniciando a nova versao...",
+          progress: "100%",
+        });
+
+        setTimeout(() => {
+          launchPortableVersion(portableExePath);
+        }, 500);
+
+        return true;
+      }
+
+      // Em execuções normais, permite usuário escolher
+      const { response } = await dialog.showMessageBox({
+        type: "info",
+        buttons: ["Sim, atualizar", "Nao, continuar"],
+        defaultId: 0,
+        cancelId: 1,
+        noLink: true,
+        title: "Atualizacao disponivel",
+        message: `Nova versao disponivel: ${nextVersion}`,
+        detail: "Deseja atualizar agora? A versao sera baixada e iniciada.",
+      });
+
+      if (response !== 0) {
+        return false;
+      }
+
+      createUpdateWindow();
+      setUpdateWindowState({
+        title: `Atualizando para ${nextVersion}`,
+        detail: "Baixando atualizacao. Nao feche o app.",
+      });
+
+      const portableExePath = await downloadPortableVersion(nextVersion);
+
+      setUpdateWindowState({
+        title: "Atualizacao pronta",
+        detail: "Iniciando a nova versao...",
+        progress: "100%",
+      });
+
+      setTimeout(() => {
+        launchPortableVersion(portableExePath);
+      }, 500);
+
+      return true;
+    } catch (error) {
+      console.error("Falha ao verificar/baixar atualizacao (portable):", error);
+      autoUpdater.removeAllListeners("download-progress");
+
+      setUpdateWindowState({
+        title: "Falha na atualizacao",
+        detail:
+          "Nao foi possivel atualizar agora. Abrindo o download manual...",
+        progress: "",
+      });
+
+      setTimeout(() => {
+        closeUpdateWindow();
+      }, 1800);
+
+      if (nextVersion) {
+        const downloadUrl = getDownloadUrl(nextVersion, true);
+        await shell.openExternal(downloadUrl);
+      }
+
+      return false;
     }
-
-    return false;
   }
 }
 
@@ -740,6 +1009,21 @@ if (!hasSingleInstanceLock) {
   });
 
   app.whenReady().then(() => {
+    // Para versão portable, verificar se há uma versão mais nova armazenada
+    if (isPortableVersion()) {
+      const currentVersion = app.getVersion();
+      const latestPortable = getLatestPortableVersion();
+
+      if (
+        latestPortable &&
+        isRemoteVersionGreater(currentVersion, latestPortable.version)
+      ) {
+        // Inicia a versão mais nova e fecha a atual
+        launchPortableVersion(latestPortable.path);
+        return;
+      }
+    }
+
     checkForUpdatesBeforeStart(isFirstRun()).then((isInstallingUpdate) => {
       if (isInstallingUpdate) {
         return;
