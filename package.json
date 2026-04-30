@@ -32,6 +32,9 @@
     "nsis": {
       "artifactName": "${productName}.${ext}"
     },
+    "portable": {
+      "artifactName": "${productName}-Portable-${version}.${ext}"
+    },
     "publish": [
       {
         "provider": "github",
