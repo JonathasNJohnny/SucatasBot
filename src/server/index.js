@@ -669,6 +669,7 @@ function saveRewardConfig(rewardConfig) {
     JSON.stringify(
       {
         ...existing,
+        rewardId: String(rewardConfig.rewardId || "").trim(),
         rewardName: String(rewardConfig.rewardName || "").trim(),
         rewardCost: parseRewardCost(rewardConfig.rewardCost),
         rewardColor: parseRewardColor(rewardConfig.rewardColor),
@@ -686,6 +687,7 @@ function loadRewardConfigFromCache() {
     const cached = loadCachedRawConfig();
     if (!cached || typeof cached !== "object") return null;
 
+    const rewardId = String(cached.rewardId || "").trim();
     const rewardName = String(cached.rewardName || "").trim();
     const rewardCost = parseRewardCost(cached.rewardCost);
     const rewardColor = parseRewardColor(cached.rewardColor);
@@ -694,6 +696,7 @@ function loadRewardConfigFromCache() {
     if (!rewardName) return null;
 
     return {
+      rewardId,
       rewardName,
       rewardCost,
       rewardColor,
@@ -702,6 +705,29 @@ function loadRewardConfigFromCache() {
   } catch {
     return null;
   }
+}
+
+function getLatestCreatedRewardByType(type, broadcasterId = "") {
+  const normalizedType = String(type || "").trim();
+  if (!normalizedType) return null;
+
+  const rewards = getCreatedRewardsByType(normalizedType);
+  if (!rewards.length) return null;
+
+  const normalizedBroadcasterId = String(broadcasterId || "").trim();
+  const filteredRewards = normalizedBroadcasterId
+    ? rewards.filter(
+        (reward) =>
+          String(reward?.broadcasterId || "").trim() ===
+          normalizedBroadcasterId,
+      )
+    : rewards;
+
+  return (
+    filteredRewards[filteredRewards.length - 1] ||
+    rewards[rewards.length - 1] ||
+    null
+  );
 }
 
 function toNumberPercent(value) {
@@ -1583,10 +1609,38 @@ async function ensureRewardExists(config) {
   const rewards = Array.isArray(rewardsData.data) ? rewardsData.data : [];
   logRewardsList(rewards, config.rewardName);
 
-  const existingReward = rewards.find(
-    (r) =>
-      normalizeRewardName(r.title) === normalizeRewardName(config.rewardName),
+  const trackedReward = getLatestCreatedRewardByType(
+    GACHAPON_REWARD_TYPE,
+    config.broadcasterId,
   );
+  const preferredRewardIds = [
+    config.rewardId,
+    twitchState.rewardId,
+    trackedReward?.id,
+  ]
+    .map((value) => String(value || "").trim())
+    .filter(Boolean);
+
+  let existingReward = null;
+  for (const rewardId of preferredRewardIds) {
+    existingReward = rewards.find((reward) => reward.id === rewardId) || null;
+    if (existingReward) {
+      break;
+    }
+  }
+
+  if (!existingReward) {
+    const preferredNames = [config.rewardName, trackedReward?.title]
+      .map((value) => String(value || "").trim())
+      .filter(Boolean)
+      .map((value) => normalizeRewardName(value));
+
+    existingReward =
+      rewards.find(
+        (reward) =>
+          preferredNames.includes(normalizeRewardName(reward.title)),
+      ) || null;
+  }
 
   if (existingReward) {
     console.log(
@@ -1710,6 +1764,7 @@ async function replaceReward(
 
   if (oldReward?.id) {
     await deleteRewardById(config, oldReward.id);
+    removeCreatedRewardEntryById(oldReward.id);
     console.log(
       `[TWITCH] reward removido: id=${oldReward.id} title="${oldReward.title}"`,
     );
@@ -3022,6 +3077,10 @@ function buildTwitchConfigFromCache() {
   const cached = loadCachedAuth();
   const credentials = getClientCredentials();
   const rewardConfig = loadRewardConfigFromCache();
+  const trackedReward = getLatestCreatedRewardByType(
+    GACHAPON_REWARD_TYPE,
+    cached?.broadcasterId,
+  );
 
   return {
     clientId: String(credentials.clientId || "").trim(),
@@ -3045,6 +3104,9 @@ function buildTwitchConfigFromCache() {
       rewardConfig?.rewardEnabled,
       DEFAULT_REWARD_ENABLED,
     ),
+    rewardId: String(
+      rewardConfig?.rewardId || trackedReward?.id || "",
+    ).trim(),
     pollIntervalMs: TWITCH_POLL_INTERVAL_MS,
   };
 }
@@ -3055,6 +3117,18 @@ async function syncCreatedRewardsForConfig(config) {
   }
 
   const trackedReward = await ensureRewardExists(config);
+  config.rewardId = String(trackedReward.id || "").trim();
+  config.rewardName = String(trackedReward.title || config.rewardName || "").trim();
+  config.rewardCost = parseRewardCost(trackedReward.cost, config.rewardCost);
+  config.rewardColor = parseRewardColor(
+    trackedReward.background_color,
+    config.rewardColor || DEFAULT_REWARD_COLOR,
+  );
+  config.rewardEnabled = parseRewardEnabled(
+    trackedReward.is_enabled,
+    config.rewardEnabled,
+  );
+  saveRewardConfig(config);
   upsertCreatedRewardEntry({
     id: String(trackedReward.id || "").trim(),
     title: String(trackedReward.title || "").trim(),
